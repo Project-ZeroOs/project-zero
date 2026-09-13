@@ -1,0 +1,23 @@
+[package]
+name = "project-zero-kernel"
+version = "0.1.0"
+edition = "2021"
+authors = ["Project Zero Systems Architecture Team"]
+description = "Project Zero - Stage 1 Minimal Capability Nucleus"
+
+[lib]
+name = "kernel"
+crate-type = ["staticlib"]
+path = "src/lib.rs"
+
+[profile.dev]
+panic = "abort"
+overflow-checks = true
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = true
+overflow-checks = true
+
+[dependencies]

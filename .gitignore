@@ -1,0 +1,31 @@
+# Project Zero - .gitignore
+
+# Build outputs
+build/
+**/target/
+*.o
+*.a
+*.elf
+*.bin
+*.iso
+*.img
+*.log
+
+# Python cache & test artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
