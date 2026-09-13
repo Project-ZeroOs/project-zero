@@ -63,8 +63,7 @@ class TestStage2FFPermissions(unittest.TestCase):
         cls.kernel_elf = PROJECT_ROOT / "build" / "kernel.elf"
         cls.readelf = get_readelf_path()
 
-    def test_elf_section_boundaries_and_alignment(self):
-        """Verify section boundary symbols exist, are 4 KiB aligned, and <= 2 MiB window."""
+    def _get_elf_symbols(self):
         res = subprocess.run(
             [self.readelf, "-sW", str(self.kernel_elf)],
             capture_output=True, text=True, check=True
@@ -77,6 +76,11 @@ class TestStage2FFPermissions(unittest.TestCase):
                     symbols[parts[7]] = int(parts[1], 16)
                 except ValueError:
                     continue
+        return symbols
+
+    def test_elf_section_boundaries_and_alignment(self):
+        """Verify section boundary symbols exist, are 4 KiB aligned, and <= 2 MiB window."""
+        symbols = self._get_elf_symbols()
 
         required_symbols = [
             "__multiboot_header_start", "__multiboot_header_end",
@@ -130,25 +134,23 @@ class TestStage2FFPermissions(unittest.TestCase):
 
     def test_qemu_stage2ff_telemetry(self):
         """Verify live QEMU execution of Stage 2F-F 4 KiB permission splitting & W^X."""
+        symbols = self._get_elf_symbols()
+        # Page count = total pages from multiboot start to stack end, minus unmapped guard page
+        mapped_count = ((symbols["__kernel_end"] - symbols["__multiboot_header_start"]) // PAGE_SIZE) - 1
+
         markers = [
             "[Stage 2F-F: 4 KiB Kernel Permission Splitting & W^X Enforcement]",
-            ".multiboot_header:",
-            "(R + NX)",
-            ".text:",
-            "(RX)",
-            ".rodata:",
-            ".data:",
-            ".bss:",
-            ".pmm_metadata:",
-            ".page_tables:",
-            ".stack_guard:",
-            "(NOT PRESENT)",
-            ".stack:",
-            "(RW + NX)",
-            "Kernel Size Bound:",
-            "<= 2 MiB window) [VERIFIED]",
-            "Populated 4 KiB kernel_pt:",
-            "active 4 KiB pages mapped with granular permissions",
+            f".multiboot_header: [0x{symbols['__multiboot_header_start']:016X}, 0x{symbols['__multiboot_header_end']:016X}) (R + NX)",
+            f".text:             [0x{symbols['__text_start']:016X}, 0x{symbols['__text_end']:016X}) (RX)",
+            f".rodata:           [0x{symbols['__rodata_start']:016X}, 0x{symbols['__rodata_end']:016X}) (R + NX)",
+            f".data:             [0x{symbols['__data_start']:016X}, 0x{symbols['__data_end']:016X}) (RW + NX)",
+            f".bss:              [0x{symbols['__bss_start']:016X}, 0x{symbols['__bss_end']:016X}) (RW + NX)",
+            f".pmm_metadata:     [0x{symbols['__pmm_metadata_start']:016X}, 0x{symbols['__pmm_metadata_end']:016X}) (RW + NX)",
+            f".page_tables:      [0x{symbols['__page_tables_start']:016X}, 0x{symbols['__page_tables_end']:016X}) (RW + NX)",
+            f".stack_guard:      [0x{symbols['__stack_guard_start']:016X}, 0x{symbols['__stack_guard_end']:016X}) (NOT PRESENT)",
+            f".stack:            [0x{symbols['__stack_start']:016X}, 0x{symbols['__stack_end']:016X}) (RW + NX)",
+            f"Kernel Size Bound:           0x{symbols['__kernel_end']:016X} <= 0xFFFFFFFF80200000 (<= 2 MiB window) [VERIFIED]",
+            f"Populated 4 KiB kernel_pt:   {mapped_count} active 4 KiB pages mapped with granular permissions",
             "Installed kernel_pd:         pdpt_table[510] -> kernel_pd[0] -> kernel_pt [via HHDM]",
             "TLB Shootdown:               CR3 reloaded (switched from 2 MiB to 4 KiB mappings)",
             "Active PML4 Invariants:      PML4[0]=ABSENT, PML4[256]=present, PML4[511]=present [VERIFIED]",
