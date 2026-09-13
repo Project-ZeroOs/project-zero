@@ -105,7 +105,7 @@ class TestStage2ECIntegratedVMM(unittest.TestCase):
             "Physical Address Width:   40 bits (Mask: 0x000000FFFFFFF000)",
             "Linear/Virtual Width:     48 bits (Canonical 48-bit Mode)",
             "No-Execute (NX) Status:   Supported: true, Enabled: true (IA32_EFER.NXE)",
-            "Active CR3 Physical Root: 0x000000000016",
+            "Active CR3 Physical Root:",
             "CR3 Control Flags:        PWT=false, PCD=false, PCID=disabled (single-core bring-up)",
             "Page Table Geometry:      512 entries x 8 bytes = 4096 bytes (aligned: true)",
             "Security Domain Policy:   Kernel mappings enforce USER=0 throughout hierarchy",

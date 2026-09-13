@@ -316,6 +316,7 @@ def build_stage2():
     link_cmd = [
         str(rust_lld_bin),
         "-flavor", "gnu",
+        "--gc-sections",
         "-T", str(linker_ld),
         "-o", str(kernel_elf)
     ] + assembled_objs + [str(kernel_a)]

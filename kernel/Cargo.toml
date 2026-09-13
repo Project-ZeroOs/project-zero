@@ -11,6 +11,7 @@ crate-type = ["staticlib"]
 path = "src/lib.rs"
 
 [profile.dev]
+opt-level = 1
 panic = "abort"
 overflow-checks = true
 

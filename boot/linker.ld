@@ -68,7 +68,7 @@ SECTIONS {
     __pmm_meta_start = .;
     __pmm_metadata_start = .;
     .pmm_metadata ALIGN(4K) : AT(ADDR(.pmm_metadata) - KERNEL_VIRT_BASE) {
-        *(.pmm_metadata)
+        KEEP(*(.pmm_metadata))
     }
     . = ALIGN(4K);
     __pmm_meta_end = .;
@@ -77,7 +77,7 @@ SECTIONS {
     /* Early 4-Level Page Tables (Dedicated section, outside .bss) */
     __page_tables_start = .;
     .page_tables ALIGN(4K) : AT(ADDR(.page_tables) - KERNEL_VIRT_BASE) {
-        *(.page_tables)
+        KEEP(*(.page_tables))
     }
     . = ALIGN(4K);
     __page_tables_end = .;
@@ -85,7 +85,7 @@ SECTIONS {
     /* Stack Guard Page (4 KiB, unmapped in Stage 2F-F, outside .bss) */
     __stack_guard_start = .;
     .stack_guard ALIGN(4K) : AT(ADDR(.stack_guard) - KERNEL_VIRT_BASE) {
-        *(.stack_guard)
+        KEEP(*(.stack_guard))
     }
     . = ALIGN(4K);
     __stack_guard_end = .;
@@ -93,7 +93,7 @@ SECTIONS {
     /* Normal Kernel Stack (64 KiB, page-aligned, outside .bss) */
     __stack_start = .;
     .stack ALIGN(4K) : AT(ADDR(.stack) - KERNEL_VIRT_BASE) {
-        *(.stack)
+        KEEP(*(.stack))
     }
     . = ALIGN(4K);
     __stack_end = .;

@@ -34,9 +34,9 @@ pub struct BenchmarkResults {
 pub fn run_benchmarks() -> BenchmarkResults {
     // 1. Physical Memory Manager Latency
     let t0 = rdtsc();
-    let frame = unsafe { PMM.allocate_frame().expect("PMM alloc bench failed") };
+    let frame = unsafe { (*(&raw mut PMM)).allocate_frame().expect("PMM alloc bench failed") };
     let t1 = rdtsc();
-    let _ = unsafe { PMM.free_frame(frame) };
+    let _ = unsafe { (*(&raw mut PMM)).free_frame(frame) };
     let t2 = rdtsc();
 
     let pmm_alloc_cycles = t1 - t0;
@@ -49,12 +49,12 @@ pub fn run_benchmarks() -> BenchmarkResults {
 
     let t3 = rdtsc();
     unsafe {
-        apt.map_page(test_page, test_frame, PageFlags::WRITABLE, MappingDomain::Kernel, &mut PMM)
+        apt.map_page(test_page, test_frame, PageFlags::WRITABLE, MappingDomain::Kernel, &mut *(&raw mut PMM))
             .expect("VMM map bench failed");
     }
     let t4 = rdtsc();
     unsafe {
-        apt.unmap_page(test_page, &mut PMM).expect("VMM unmap bench failed");
+        apt.unmap_page(test_page, &mut *(&raw mut PMM)).expect("VMM unmap bench failed");
     }
     let t5 = rdtsc();
 
