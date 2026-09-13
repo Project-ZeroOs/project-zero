@@ -345,8 +345,10 @@ def test_qemu(kernel_image, markers=None):
     qemu_cmd = [
         str(qemu_bin),
         "-kernel", str(kernel_image),
-        "-nographic",
+        "-display", "none",
         "-serial", "stdio",
+        "-monitor", "none",
+        "-no-reboot",
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"
     ]
 
@@ -354,6 +356,7 @@ def test_qemu(kernel_image, markers=None):
     try:
         proc = subprocess.Popen(
             qemu_cmd,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
@@ -370,6 +373,11 @@ def test_qemu(kernel_image, markers=None):
     print("\n------------------- CAPTURED SERIAL STREAM -------------------")
     print(stdout)
     print("--------------------------------------------------------------\n")
+
+    if stderr.strip():
+        print("\n------------------- CAPTURED STDERR STREAM -------------------")
+        print(stderr)
+        print("--------------------------------------------------------------\n")
 
     failures = []
     for marker in markers:
