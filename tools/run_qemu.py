@@ -24,25 +24,169 @@ Performs end-to-end automated verification of the Stage 2 kernel nucleus:
 
 import os
 import sys
+import shutil
+import platform
 import subprocess
 import time
 from pathlib import Path
+
+IS_WINDOWS = platform.system() == "Windows"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 KERNEL_DIR = PROJECT_ROOT / "kernel"
 BOOT_DIR = PROJECT_ROOT / "boot"
 BUILD_DIR = PROJECT_ROOT / "build"
 
-CARGO_BIN = Path(os.path.expanduser("~/.cargo/bin/cargo.exe"))
-NASM_BIN = Path(r"C:\msys64\ucrt64\bin\nasm.exe")
-OBJCOPY_BIN = Path(r"C:\msys64\ucrt64\bin\objcopy.exe")
-QEMU_BIN = Path(r"C:\msys64\ucrt64\bin\qemu-system-x86_64.exe")
 
-RUST_LLD_CANDIDATES = list(Path(os.path.expanduser("~/.rustup")).glob("**/rust-lld.exe"))
-if not RUST_LLD_CANDIDATES:
-    print("[ERROR] rust-lld.exe not found in ~/.rustup.")
-    sys.exit(1)
-RUST_LLD_BIN = RUST_LLD_CANDIDATES[0]
+def resolve_cargo() -> Path:
+    """Resolves the cargo executable via PATH or standard cargo home."""
+    found = shutil.which("cargo")
+    if found:
+        return Path(found)
+    cargo_home_bin = Path(os.path.expanduser("~/.cargo/bin"))
+    candidates = [
+        cargo_home_bin / "cargo.exe",
+        cargo_home_bin / "cargo"
+    ]
+    for cand in candidates:
+        if cand.exists():
+            return cand
+    raise FileNotFoundError(
+        "Required tool 'cargo' was not found. "
+        "Ensure Rust/Cargo is installed and available on PATH."
+    )
+
+
+def resolve_nasm() -> Path:
+    """Resolves the nasm assembler via PATH or standard Windows/MSYS2 locations."""
+    found = shutil.which("nasm")
+    if found:
+        return Path(found)
+    if IS_WINDOWS:
+        candidates = [
+            Path(r"C:\msys64\ucrt64\bin\nasm.exe"),
+            Path(r"C:\msys64\usr\bin\nasm.exe"),
+            Path(r"C:\Program Files\NASM\nasm.exe"),
+        ]
+        for cand in candidates:
+            if cand.exists():
+                return cand
+    raise FileNotFoundError(
+        "Required tool 'nasm' was not found. "
+        "Install NASM or ensure it is available on PATH."
+    )
+
+
+def resolve_objcopy() -> Path:
+    """Resolves objcopy or llvm-objcopy via PATH or standard Windows/MSYS2 locations."""
+    for name in ["objcopy", "llvm-objcopy"]:
+        found = shutil.which(name)
+        if found:
+            return Path(found)
+    if IS_WINDOWS:
+        candidates = [
+            Path(r"C:\msys64\ucrt64\bin\objcopy.exe"),
+            Path(r"C:\msys64\usr\bin\objcopy.exe"),
+        ]
+        for cand in candidates:
+            if cand.exists():
+                return cand
+    raise FileNotFoundError(
+        "Required tool 'objcopy' was not found. "
+        "Install GNU binutils (or llvm-objcopy) or ensure objcopy is available on PATH."
+    )
+
+
+def resolve_qemu() -> Path:
+    """Resolves qemu-system-x86_64 via PATH or standard Windows locations."""
+    for name in ["qemu-system-x86_64", "qemu-system-x86_64.exe"]:
+        found = shutil.which(name)
+        if found:
+            return Path(found)
+    if IS_WINDOWS:
+        candidates = [
+            Path(r"C:\msys64\ucrt64\bin\qemu-system-x86_64.exe"),
+            Path(r"C:\Program Files\qemu\qemu-system-x86_64.exe"),
+        ]
+        for cand in candidates:
+            if cand.exists():
+                return cand
+    raise FileNotFoundError(
+        "Required tool 'qemu-system-x86_64' was not found. "
+        "Install QEMU or ensure qemu-system-x86_64 is available on PATH."
+    )
+
+
+def find_rust_lld() -> Path:
+    """Resolves rust-lld via PATH, active rustc sysroot, or ~/.rustup fallback."""
+    target_names = ["rust-lld.exe", "rust-lld"] if IS_WINDOWS else ["rust-lld"]
+    # 1. Check PATH
+    for name in target_names:
+        found = shutil.which(name)
+        if found:
+            return Path(found)
+
+    # 2. Check active Rust toolchain sysroot
+    rustc_candidates = []
+    found_rustc = shutil.which("rustc")
+    if found_rustc:
+        rustc_candidates.append(Path(found_rustc))
+    cargo_home_bin = Path(os.path.expanduser("~/.cargo/bin"))
+    rustc_candidates.extend([cargo_home_bin / "rustc.exe", cargo_home_bin / "rustc"])
+
+    for rc in rustc_candidates:
+        if rc.exists():
+            try:
+                res = subprocess.run(
+                    [str(rc), "--print", "sysroot"],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                sysroot = Path(res.stdout.strip())
+                lib_rustlib = sysroot / "lib" / "rustlib"
+                if lib_rustlib.exists():
+                    for target_name in target_names:
+                        for p in lib_rustlib.rglob(target_name):
+                            if p.is_file() and p.name == target_name:
+                                return p
+                for target_name in target_names:
+                    for p in sysroot.rglob(target_name):
+                        if p.is_file() and p.name == target_name:
+                            return p
+            except Exception:
+                pass
+
+    # 3. Fallback: ~/.rustup search
+    rustup_dir = Path(os.path.expanduser("~/.rustup"))
+    if rustup_dir.exists():
+        for target_name in target_names:
+            candidates = [
+                p for p in rustup_dir.rglob(target_name)
+                if p.is_file() and p.name == target_name
+            ]
+            if candidates:
+                return candidates[0]
+
+    raise FileNotFoundError(
+        "rust-lld was not found. "
+        "Ensure the active Rust toolchain is installed and llvm-tools-preview is available."
+    )
+
+
+def __getattr__(name: str):
+    """Lazy backward-compatibility accessors for legacy module-level variables."""
+    if name == "QEMU_BIN":
+        return resolve_qemu()
+    if name == "CARGO_BIN":
+        return resolve_cargo()
+    if name == "NASM_BIN":
+        return resolve_nasm()
+    if name == "OBJCOPY_BIN":
+        return resolve_objcopy()
+    if name == "RUST_LLD_BIN":
+        return find_rust_lld()
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 EXPECTED_STAGE2C_MARKERS = [
     "BPLK",
@@ -137,9 +281,14 @@ def run_command(cmd, cwd=None, description=""):
 def build_stage2():
     BUILD_DIR.mkdir(exist_ok=True)
 
+    cargo_bin = resolve_cargo()
+    nasm_bin = resolve_nasm()
+    rust_lld_bin = find_rust_lld()
+    objcopy_bin = resolve_objcopy()
+
     # 1. Compile Rust no_std kernel
     run_command(
-        [str(CARGO_BIN), "build", "--target", "x86_64-unknown-none"],
+        [str(cargo_bin), "build", "--target", "x86_64-unknown-none"],
         cwd=KERNEL_DIR,
         description="Compiling Rust kernel staticlib (cargo build)"
     )
@@ -155,7 +304,7 @@ def build_stage2():
         src_path = BOOT_DIR / src_name
         obj_path = BUILD_DIR / obj_name
         run_command(
-            [str(NASM_BIN), "-f", "elf64", str(src_path), "-o", str(obj_path)],
+            [str(nasm_bin), "-f", "elf64", str(src_path), "-o", str(obj_path)],
             description=f"Assembling {src_name} (nasm -f elf64)"
         )
         assembled_objs.append(str(obj_path))
@@ -165,7 +314,7 @@ def build_stage2():
     kernel_a = KERNEL_DIR / "target" / "x86_64-unknown-none" / "debug" / "libkernel.a"
     kernel_elf = BUILD_DIR / "kernel.elf"
     link_cmd = [
-        str(RUST_LLD_BIN),
+        str(rust_lld_bin),
         "-flavor", "gnu",
         "-T", str(linker_ld),
         "-o", str(kernel_elf)
@@ -176,7 +325,7 @@ def build_stage2():
     # 4. Generate Multiboot-compatible container (ELF32)
     kernel32_elf = BUILD_DIR / "kernel32.elf"
     run_command(
-        [str(OBJCOPY_BIN), "-O", "elf32-i386", str(kernel_elf), str(kernel32_elf)],
+        [str(objcopy_bin), "-O", "elf32-i386", str(kernel_elf), str(kernel32_elf)],
         description="Generating Multiboot container (objcopy -O elf32-i386)"
     )
     print(f"[SUCCESS] Stage 2 kernel built at {kernel32_elf} ({kernel32_elf.stat().st_size} bytes)")
@@ -189,9 +338,11 @@ def test_qemu(kernel_image, markers=None):
     if markers is None:
         markers = EXPECTED_STAGE2_MARKERS
 
+    qemu_bin = resolve_qemu()
+
     print("\n[TEST] Launching QEMU headless verification...")
     qemu_cmd = [
-        str(QEMU_BIN),
+        str(qemu_bin),
         "-kernel", str(kernel_image),
         "-nographic",
         "-serial", "stdio",
