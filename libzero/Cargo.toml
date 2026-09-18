@@ -1,0 +1,13 @@
+[package]
+name = "libzero"
+version = "0.1.0"
+edition = "2021"
+authors = ["ZeroOS Architecture Team"]
+description = "ZeroOS Minimal Freestanding User-Space Runtime Library"
+
+[lib]
+name = "libzero"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]

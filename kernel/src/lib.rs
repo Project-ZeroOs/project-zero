@@ -19,6 +19,7 @@ pub mod fs;
 pub mod dev;
 pub mod net;
 pub mod smp;
+pub mod stage4;
 
 use core::alloc::GlobalAlloc;
 use core::panic::PanicInfo;
@@ -310,6 +311,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64, multiboot_magic: u64) -> ! {
 
     // 34. Stage 3N: SMP / Multi-Core Architecture Verification
     smp::tests::run_stage3n_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 35. Stage 4A: Core System Service Runtime & Capability Directory Verification
+    stage4::tests::run_stage4a_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
 
     // Signal success to QEMU isa-debug-exit (0x10 -> exit code 33)
     unsafe { cpu::outb(0xF4, 0x10); }

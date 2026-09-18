@@ -1,0 +1,19 @@
+[package]
+name = "init"
+version = "0.1.0"
+edition = "2021"
+authors = ["ZeroOS Architecture Team"]
+description = "ZeroOS Minimal User-Space System Service Supervisor (init)"
+
+[[bin]]
+name = "init"
+path = "src/main.rs"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[dependencies]
+libzero = { path = "../libzero" }
