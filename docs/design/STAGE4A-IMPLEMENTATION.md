@@ -1,9 +1,9 @@
 # ZeroOS Phase 4A Implementation Report
 
-**Status**: 🟢 VERIFIED & READY FOR FREEZE  
-**Subsystem**: Core System Service Runtime & Capability Directory (`init`, `brokerd`, `libzero`)  
-**Frozen Specification**: Stage 4 Architecture Rev6 & ADR-0024 Rev6  
-**Kernel Preservation**: Stage 3A–3N Inviolate  
+**Status**: 🟢 VERIFIED & READY FOR FREEZE
+**Subsystem**: Core System Service Runtime & Capability Directory (`init`, `brokerd`, `libzero`)
+**Frozen Specification**: Stage 4 Architecture Rev6 & ADR-0024 Rev6
+**Kernel Preservation**: Stage 3A–3N Inviolate
 
 ---
 
