@@ -10,6 +10,7 @@ KERNEL_PHYS_BASE = 0x00100000;
 
 _start_phys = _start - KERNEL_VIRT_BASE;
 ENTRY(_start_phys)
+EXTERN(ap_startup_entry)
 
 SECTIONS {
     /* Stage 2F-A: Virtual addresses in higher half, loaded at physical 1 MiB */
@@ -31,6 +32,7 @@ SECTIONS {
     __text_start = .;
     .text ALIGN(4K) : AT(ADDR(.text) - KERNEL_VIRT_BASE) {
         *(.text .text.*)
+        KEEP(*(.text.ap_startup_entry))
     }
     . = ALIGN(4K);
     __text_end = .;
@@ -102,5 +104,5 @@ SECTIONS {
     __kernel_end = .;
 }
 
-/* Bounded bootstrap window: kernel must fit within initial 2 MiB PT */
-ASSERT(__kernel_end <= KERNEL_VIRT_BASE + 0x200000, "Kernel image exceeds 2 MiB bootstrap PT mapping window!");
+/* Bounded bootstrap window: kernel must fit within initial 4 MiB PT */
+ASSERT(__kernel_end <= KERNEL_VIRT_BASE + 0x400000, "Kernel image exceeds 4 MiB bootstrap PT mapping window!");

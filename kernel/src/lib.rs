@@ -11,7 +11,14 @@ pub mod hal;
 pub mod mm;
 pub mod task;
 pub mod ipc;
+pub mod cap;
+pub mod syscall;
 pub mod bench;
+pub mod elf;
+pub mod fs;
+pub mod dev;
+pub mod net;
+pub mod smp;
 
 use core::alloc::GlobalAlloc;
 use core::panic::PanicInfo;
@@ -19,15 +26,7 @@ use hal::arch::x86_64::cpu::{self, CpuDiagnostics};
 use hal::arch::x86_64::serial::COM1;
 use hal::arch::x86_64::gdt::init_gdt;
 use hal::arch::x86_64::idt::init_idt;
-use hal::arch::x86_64::timer::{init_pic, init_pit, ticks};
-use mm::pmm::{PMM, PhysFrame};
-use mm::vmm::{ActivePageTable, Page, VirtualAddress, PageFlags};
-use mm::heap::ALLOCATOR;
-use task::thread::Thread;
-use task::scheduler::SCHEDULER;
-use ipc::{IpcEndpoint, IpcMessage};
-
-static mut TEST_IPC_ENDPOINT: IpcEndpoint = IpcEndpoint::new();
+use mm::pmm::PMM;
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
@@ -47,6 +46,18 @@ fn panic(info: &PanicInfo) -> ! {
 /// Stage 2C Kernel Nucleus Entry Point: Multiboot Memory-Map Discovery & Physical Memory Inventory.
 #[no_mangle]
 pub extern "C" fn kernel_main(boot_info_addr: u64, multiboot_magic: u64) -> ! {
+    // 0. Zero the .bss section (uninitialized static tables)
+    extern "C" {
+        static mut __bss_start: u8;
+        static mut __bss_end: u8;
+    }
+    unsafe {
+        let bss_start = &raw mut __bss_start as *mut u8;
+        let bss_end = &raw mut __bss_end as *mut u8;
+        let bss_size = (bss_end as usize) - (bss_start as usize);
+        core::ptr::write_bytes(bss_start, 0, bss_size);
+    }
+
     // 1. Diagnostics & Banner
     COM1.init();
     kprintln!("============================================================");
@@ -221,40 +232,87 @@ pub extern "C" fn kernel_main(boot_info_addr: u64, multiboot_magic: u64) -> ! {
     kprintln!("  * HHDM Privilege Aperture: Privileged RW aperture verified distinct from Kernel VMA immutability.");
     kprintln!("  * Project Zero Stage 2F Higher-Half & Physical Memory Architecture FULLY OPERATIONAL.");
 
+    // 14. Stage 3A: Execution Primitives & Guarded Stacks
+    task::run_stage3a_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &geometry);
+
+    kprintln!("\n[Stage 3A Execution Primitives Complete]");
+    kprintln!("  * Static KernelThread table established with stable addresses.");
+    kprintln!("  * Dedicated Kernel Stack Arena active over [0xFFFFFFFF90000000, 0xFFFFFFFFA0000000).");
+    kprintln!("  * 16 KiB stacks with 4 KiB unmapped guards backed transactionally by PMM/VMM.");
+    kprintln!("  * Controlled Guard Page #PF verified with Vector 14 and exact CR2.");
+    kprintln!("  * BSP PerCpu initialized via IA32_GS_BASE (offset 16 verified).");
+    kprintln!("  * Forged initial cooperative activation frame verified.");
+
+    // 15. Stage 3B: Cooperative Scheduler Core
+    let mut vmm = mm::vmm::ActivePageTable::new();
+    task::run_stage3b_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 16. Stage 3C Increment 2: LAPIC Discovery & MMIO Mapping
+    let lapic_info = hal::arch::x86_64::lapic::init_lapic_mmio(
+        unsafe { &mut *(&raw mut mm::pmm::PMM) },
+        &mut vmm,
+    );
+    hal::arch::x86_64::lapic::print_lapic_diagnostics(&lapic_info);
+
+    // 17. Stage 3C Increment 3: LAPIC Timer Programming & Non-Preemptive ISR Verification
+    hal::arch::x86_64::lapic::run_stage3c_inc3_verification();
+
+    // 18. Stage 3C Increment 4: Preemptive Context Assembly Primitives Verification
+    task::run_stage3c_inc4_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 19. Stage 3C Increment 5: Scheduler Preemption Integration Verification
+    task::run_stage3c_inc5_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 20. Stage 3D Increment 1: Core Block/Wake Foundation Verification
+    task::run_stage3d_inc1_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 21. Stage 3D Increment 2: Kernel Mutex Primitive Verification
+    task::run_stage3d_inc2_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 22. Stage 3D Increment 3: Condition Variable Primitive Verification
+    task::run_stage3d_inc3_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 23. Stage 3D Increment 4: Timer Sleep Primitive Verification
+    task::run_stage3d_inc4_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 24. Stage 3D Increment 5: Kernel Event Primitive Verification
+    task::run_stage3d_inc5_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 25. Stage 3E: Thread Lifecycle & Resource Reclamation Verification
+    task::run_stage3e_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 26. Stage 3F: Process Model, Address Spaces & Process Lifecycle Verification
+    task::run_stage3f_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 27. Stage 3G: IPC & Kernel Object Semantics Verification
+    ipc::run_stage3g_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 28. Stage 3H: Capability System & Kernel Authority Model Verification
+    cap::run_stage3h_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 29. Stage 3I: User Space & System Call Interface Verification
+    syscall::tests::run_stage3i_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 30. Stage 3J: ELF & Program Execution Verification
+    elf::tests::run_stage3j_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 31. Stage 3K: Storage / Filesystem Verification
+    fs::init(unsafe { &mut *(&raw mut mm::pmm::PMM) });
+    fs::tests::run_stage3k_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 32. Stage 3L: Device / Hardware Model Verification
+    dev::init();
+    dev::tests::run_stage3l_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 33. Stage 3M: Native Networking Model Verification
+    net::init(unsafe { &mut *(&raw mut mm::pmm::PMM) });
+    net::tests::run_stage3m_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 34. Stage 3N: SMP / Multi-Core Architecture Verification
+    smp::tests::run_stage3n_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
     // Signal success to QEMU isa-debug-exit (0x10 -> exit code 33)
     unsafe { cpu::outb(0xF4, 0x10); }
 
     loop { cpu::hlt(); }
-}
-
-
-
-
-/// Worker Thread Alpha: Demonstrates context switching and sends an IPC message to Beta.
-fn thread_alpha() {
-    kprintln!("  [Thread: Alpha] Started. Yielding to Beta...");
-    unsafe { SCHEDULER.yield_now(); }
-
-    kprintln!("  [Thread: Alpha] Resumed. Sending Synchronous IPC to Beta...");
-    let msg = IpcMessage::new(101, 0x55, 0x1111, 0x2222, 0x3333, 0x4444);
-    unsafe {
-        TEST_IPC_ENDPOINT.send(msg);
-    }
-    kprintln!("  [Thread: Alpha] IPC delivered. Yielding to master...");
-    unsafe { SCHEDULER.yield_now(); }
-}
-
-/// Worker Thread Beta: Receives the IPC message from Alpha.
-fn thread_beta() {
-    kprintln!("  [Thread: Beta] Started. Waiting for Synchronous IPC from Alpha...");
-    let received = unsafe { TEST_IPC_ENDPOINT.receive() };
-    kprintln!("  [Thread: Beta] Received IPC Message from Sender {}: label=0x{:X}, payload[0]=0x{:X}", 
-        received.sender_id, received.label, received.payload[0]
-    );
-    assert_eq!(received.sender_id, 101);
-    assert_eq!(received.label, 0x55);
-    assert_eq!(received.payload[0], 0x1111);
-    kprintln!("  [x] Inter-thread synchronous IPC rendezvous verified.");
-
-    unsafe { SCHEDULER.yield_now(); }
 }

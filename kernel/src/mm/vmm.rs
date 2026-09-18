@@ -614,6 +614,23 @@ pub unsafe fn phys_to_hhdm_table(frame: PhysFrame) -> *mut PageTable {
 // Hardware Initialization & Diagnostics (Stage 2E-A)
 // ====================================================================
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
+/// Permanent Master Kernel PML4 root physical address (Stage 3F).
+pub static MASTER_KERNEL_PML4: AtomicU64 = AtomicU64::new(0);
+
+/// Returns the physical frame of the Master Kernel PML4 table.
+pub fn get_master_kernel_pml4() -> PhysFrame {
+    let val = MASTER_KERNEL_PML4.load(Ordering::Relaxed);
+    if val != 0 {
+        PhysFrame(val)
+    } else {
+        let (root, _) = Cr3::read(get_active_geometry());
+        MASTER_KERNEL_PML4.store(root.address(), Ordering::Relaxed);
+        root
+    }
+}
+
 /// Global hardware geometry discovered during bootstrap.
 pub static mut ACTIVE_GEOMETRY: AddressSpaceGeometry = AddressSpaceGeometry {
     physical_bits: 36,
@@ -641,6 +658,10 @@ pub fn init_paging_hardware() -> AddressSpaceGeometry {
     unsafe {
         ACTIVE_GEOMETRY = geometry;
     }
+
+    // Record authoritative Master Kernel PML4 root from bootstrap CR3
+    let (cr3_root, _) = Cr3::read(&geometry);
+    MASTER_KERNEL_PML4.store(cr3_root.address(), Ordering::Relaxed);
 
     geometry
 }
@@ -800,6 +821,51 @@ impl ActivePageTable {
         }
 
         p1_entry.points_to_frame(geometry).ok_or(VmmError::NotMapped)
+    }
+
+    /// Queries the architectural PageTableFlags for a mapped virtual page.
+    pub fn get_page_flags(&self, page: Page) -> Result<PageTableFlags, VmmError> {
+        let geometry = get_active_geometry();
+        let vaddr = page.start_address();
+
+        if !vaddr.is_canonical(geometry) {
+            return Err(VmmError::NonCanonicalAddress);
+        }
+
+        let pml4 = unsafe { &*phys_to_virt_table(self.pml4_base) };
+        let p4_entry = &pml4.entries[vaddr.p4_index()];
+        if !p4_entry.is_present() {
+            return Err(VmmError::NotMapped);
+        }
+
+        let pdpt_frame = p4_entry.points_to_frame(geometry).ok_or(VmmError::NotMapped)?;
+        let pdpt = unsafe { &*phys_to_virt_table(pdpt_frame) };
+        let p3_entry = &pdpt.entries[vaddr.p3_index()];
+        if !p3_entry.is_present() {
+            return Err(VmmError::NotMapped);
+        }
+        if p3_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            return Ok(p3_entry.flags());
+        }
+
+        let pd_frame = p3_entry.points_to_frame(geometry).ok_or(VmmError::NotMapped)?;
+        let pd = unsafe { &*phys_to_virt_table(pd_frame) };
+        let p2_entry = &pd.entries[vaddr.p2_index()];
+        if !p2_entry.is_present() {
+            return Err(VmmError::NotMapped);
+        }
+        if p2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            return Ok(p2_entry.flags());
+        }
+
+        let pt_frame = p2_entry.points_to_frame(geometry).ok_or(VmmError::NotMapped)?;
+        let pt = unsafe { &*phys_to_virt_table(pt_frame) };
+        let p1_entry = &pt.entries[vaddr.p1_index()];
+        if !p1_entry.is_present() {
+            return Err(VmmError::NotMapped);
+        }
+
+        Ok(p1_entry.flags())
     }
 
     /// Translates an arbitrary virtual address to a physical address with byte offset preserved.
@@ -1031,6 +1097,142 @@ impl ActivePageTable {
         }
 
         Ok(mapped_frame)
+    }
+}
+
+// ====================================================================
+// AddressSpace Abstraction & Page Table Isolation (Stage 3F)
+// ====================================================================
+
+/// Strongly typed AddressSpace abstraction managing isolated PML4 hierarchies (Stage 3F).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AddressSpace {
+    pub pml4_root: PhysFrame,
+}
+
+impl AddressSpace {
+    /// Returns the permanent Master Kernel AddressSpace rooted in MASTER_KERNEL_PML4.
+    pub fn master_kernel() -> Self {
+        Self {
+            pml4_root: get_master_kernel_pml4(),
+        }
+    }
+
+    /// Explicit constructor wrapping a validated physical frame.
+    pub const fn from_root(pml4_root: PhysFrame) -> Self {
+        Self { pml4_root }
+    }
+
+    /// Returns the physical root frame of this address space.
+    #[inline(always)]
+    pub fn root_frame(&self) -> PhysFrame {
+        self.pml4_root
+    }
+
+    /// Creates a new isolated user address space:
+    /// - Allocates 1 physical frame from PMM for the PML4 root.
+    /// - Clears all 512 entries to 0 (Not Present).
+    /// - Clones the higher-half kernel aperture (PML4 entries 256..512) from MASTER_KERNEL_PML4.
+    /// - Enforces that all copied kernel entries have USER=0 (supervisor only).
+    /// - Leaves lower-half user aperture (PML4 entries 0..256) completely unmapped.
+    pub fn new_user(pmm: &mut PhysicalMemoryManager) -> Result<Self, VmmError> {
+        let root_frame = match pmm.alloc_frame() {
+            Some(f) => f,
+            None => return Err(VmmError::OutOfMemory),
+        };
+
+        let master_pml4_frame = get_master_kernel_pml4();
+        let geometry = get_active_geometry();
+
+        unsafe {
+            let new_pml4 = &mut *phys_to_virt_table(root_frame);
+            let master_pml4 = &*phys_to_virt_table(master_pml4_frame);
+
+            // 1. Zero all entries
+            new_pml4.zero();
+
+            // 2. Clone higher-half kernel aperture [256..512]
+            for i in 256..512 {
+                let master_entry = master_pml4.entries[i];
+                if master_entry.is_present() {
+                    assert!(
+                        !master_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE),
+                        "Master kernel PML4 entry {} contains illegal USER flag",
+                        i
+                    );
+                    new_pml4.entries[i] = master_entry;
+                }
+            }
+
+            // 3. Verify lower-half user aperture [0..256] is strictly unmapped
+            for i in 0..256 {
+                assert!(!new_pml4.entries[i].is_present(), "New PML4 user aperture is not clean at index {}", i);
+            }
+        }
+
+        Ok(Self { pml4_root: root_frame })
+    }
+
+    /// Destroys the address space and reclaims user page tables and root frame:
+    /// - Invariant 1: Cannot destroy MASTER_KERNEL_PML4.
+    /// - Invariant 2: Active CR3 check: Local CR3 MUST NOT point to this address space.
+    ///   If local CR3 matches self.pml4_root, switches to MASTER_KERNEL_PML4 before freeing!
+    /// - Invariant 3: Kernel aperture (entries 256..512) is NEVER freed.
+    /// - Recursively frees any allocated user-space intermediate tables (entries 0..256).
+    /// - Frees the root PML4 frame back to PMM.
+    pub fn destroy(&mut self, pmm: &mut PhysicalMemoryManager) -> Result<(), VmmError> {
+        if self.pml4_root.address() == 0 {
+            return Ok(());
+        }
+
+        let master_root = get_master_kernel_pml4();
+        if self.pml4_root == master_root {
+            panic!("Catastrophic error: Attempted to destroy MASTER_KERNEL_PML4");
+        }
+
+        let geometry = get_active_geometry();
+
+        // Check active CR3 hazard: if active CR3 points to this PML4, switch to MASTER_KERNEL_PML4
+        let (active_cr3, _) = Cr3::read(geometry);
+        if active_cr3 == self.pml4_root {
+            Cr3::write(master_root, Cr3Flags::empty(), geometry);
+        }
+
+        unsafe {
+            let pml4 = &mut *phys_to_virt_table(self.pml4_root);
+
+            // Reclaim any user-space tables in lower half [0..256]
+            for p4_idx in 0..256 {
+                if pml4.entries[p4_idx].is_present() {
+                    if let Some(pdpt_frame) = pml4.entries[p4_idx].points_to_frame(geometry) {
+                        let pdpt = &mut *phys_to_virt_table(pdpt_frame);
+                        for p3_idx in 0..512 {
+                            if pdpt.entries[p3_idx].is_present() && !pdpt.entries[p3_idx].flags().contains(PageTableFlags::HUGE_PAGE) {
+                                if let Some(pd_frame) = pdpt.entries[p3_idx].points_to_frame(geometry) {
+                                    let pd = &mut *phys_to_virt_table(pd_frame);
+                                    for p2_idx in 0..512 {
+                                        if pd.entries[p2_idx].is_present() && !pd.entries[p2_idx].flags().contains(PageTableFlags::HUGE_PAGE) {
+                                            if let Some(pt_frame) = pd.entries[p2_idx].points_to_frame(geometry) {
+                                                let _ = pmm.free_frame(pt_frame);
+                                            }
+                                        }
+                                    }
+                                    let _ = pmm.free_frame(pd_frame);
+                                }
+                            }
+                        }
+                        let _ = pmm.free_frame(pdpt_frame);
+                    }
+                    pml4.entries[p4_idx].clear();
+                }
+            }
+
+            // Free the PML4 root frame itself
+            let _ = pmm.free_frame(self.pml4_root);
+        }
+
+        self.pml4_root = PhysFrame(0);
+        Ok(())
     }
 }
 
@@ -1864,55 +2066,65 @@ pub fn run_stage2ff_verification(pmm: &mut PhysicalMemoryManager) {
     assert_eq!(stack_start & 0xFFF, 0, "stack_start misaligned");
     assert_eq!(stack_end & 0xFFF, 0, "stack_end misaligned");
 
-    // 2. Kernel size bound invariant (must fit inside 2 MiB bootstrap PT window)
+    // 2. Kernel size bound invariant (must fit inside 4 MiB bootstrap PT window)
     assert!(
-        kernel_end <= KERNEL_VIRT_BASE + 2 * 1024 * 1024,
-        "CRITICAL: Kernel image exceeds 2 MiB bootstrap PT window!"
+        kernel_end <= KERNEL_VIRT_BASE + 4 * 1024 * 1024,
+        "CRITICAL: Kernel image exceeds 4 MiB bootstrap PT window!"
     );
-    kprintln!("  Kernel Size Bound:           0x{:016X} <= 0x{:016X} (<= 2 MiB window) [VERIFIED]",
-        kernel_end, KERNEL_VIRT_BASE + 2 * 1024 * 1024);
+    kprintln!("  Kernel Size Bound:           0x{:016X} <= 0x{:016X} (<= 4 MiB window) [VERIFIED]",
+        kernel_end, KERNEL_VIRT_BASE + 4 * 1024 * 1024);
 
-    // 3. Allocate kernel_pd and kernel_pt dynamically from PMM (PMM ownership tracked)
-    let pd_frame = pmm.alloc_frame().expect("Allocating kernel_pd frame");
-    let pt_frame = pmm.alloc_frame().expect("Allocating kernel_pt frame");
+    // 3. Allocate kernel_pd and two kernel_pt frames (covering 0–4 MiB of kernel VMA)
+    let pd_frame  = pmm.alloc_frame().expect("Allocating kernel_pd frame");
+    let pt_frame  = pmm.alloc_frame().expect("Allocating kernel_pt frame (0–2 MiB)");
+    let pt2_frame = pmm.alloc_frame().expect("Allocating kernel_pt2 frame (2–4 MiB)");
 
-    let pt = unsafe { &mut *phys_to_virt_table(pt_frame) };
+    let pt  = unsafe { &mut *phys_to_virt_table(pt_frame) };
     pt.zero();
+    let pt2 = unsafe { &mut *phys_to_virt_table(pt2_frame) };
+    pt2.zero();
 
     let mut mapped_count = 0usize;
-    for i in 0..512 {
+    for i in 0..1024usize {
         let page_vaddr = KERNEL_VIRT_BASE + (i as u64 * 4096);
-        let page_phys  = (i as u64 * 4096);
-        let frame = PhysFrame(page_phys);
+        let page_phys  = i as u64 * 4096;
+        let frame      = PhysFrame(page_phys);
+
+        // Select target PT entry: first 512 pages → pt, next 512 → pt2
+        let entry = if i < 512 {
+            &mut pt.entries[i]
+        } else {
+            &mut pt2.entries[i - 512]
+        };
 
         if page_vaddr >= mb_start && page_vaddr < mb_end {
-            pt.entries[i].set(frame, PageTableFlags::PRESENT | PageTableFlags::NO_EXECUTE, geometry);
+            entry.set(frame, PageTableFlags::PRESENT | PageTableFlags::NO_EXECUTE, geometry);
             mapped_count += 1;
         } else if page_vaddr >= text_start && page_vaddr < text_end {
-            pt.entries[i].set(frame, PageTableFlags::PRESENT, geometry);
+            entry.set(frame, PageTableFlags::PRESENT, geometry);
             mapped_count += 1;
         } else if page_vaddr >= ro_start && page_vaddr < ro_end {
-            pt.entries[i].set(frame, PageTableFlags::PRESENT | PageTableFlags::NO_EXECUTE, geometry);
+            entry.set(frame, PageTableFlags::PRESENT | PageTableFlags::NO_EXECUTE, geometry);
             mapped_count += 1;
         } else if page_vaddr >= data_start && page_vaddr < data_end {
-            pt.entries[i].set(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE, geometry);
+            entry.set(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE, geometry);
             mapped_count += 1;
         } else if page_vaddr >= bss_start && page_vaddr < bss_end {
-            pt.entries[i].set(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE, geometry);
+            entry.set(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE, geometry);
             mapped_count += 1;
         } else if page_vaddr >= pmm_start && page_vaddr < pmm_end {
-            pt.entries[i].set(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE, geometry);
+            entry.set(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE, geometry);
             mapped_count += 1;
         } else if page_vaddr >= pt_start && page_vaddr < pt_end {
-            pt.entries[i].set(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE, geometry);
+            entry.set(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE, geometry);
             mapped_count += 1;
         } else if page_vaddr >= guard_start && page_vaddr < guard_end {
-            pt.entries[i].clear(); // Stack guard: NOT PRESENT
+            entry.clear(); // Stack guard: NOT PRESENT
         } else if page_vaddr >= stack_start && page_vaddr < stack_end {
-            pt.entries[i].set(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE, geometry);
+            entry.set(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE, geometry);
             mapped_count += 1;
         } else {
-            pt.entries[i].clear();
+            entry.clear();
         }
     }
     kprintln!("  Populated 4 KiB kernel_pt:   {} active 4 KiB pages mapped with granular permissions", mapped_count);
@@ -1921,15 +2133,10 @@ pub fn run_stage2ff_verification(pmm: &mut PhysicalMemoryManager) {
     let pd = unsafe { &mut *phys_to_virt_table(pd_frame) };
     pd.zero();
 
-    // Entry 0 points to kernel_pt (intermediate flags PRESENT | WRITABLE, USER=0)
-    pd.entries[0].set(pt_frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, geometry);
-
-    // Copy entries 1..511 from pd_table to preserve any remaining 1 GiB mappings
-    let old_pd_phys = (&raw const pd_table as u64) - KERNEL_VIRT_BASE;
-    let old_pd = unsafe { &*phys_to_virt_table(PhysFrame(old_pd_phys)) };
-    for j in 1..512 {
-        pd.entries[j] = old_pd.entries[j];
-    }
+    // Entry 0 → kernel_pt (first 2 MiB), Entry 1 → kernel_pt2 (next 2 MiB)
+    pd.entries[0].set(pt_frame,  PageTableFlags::PRESENT | PageTableFlags::WRITABLE, geometry);
+    pd.entries[1].set(pt2_frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, geometry);
+    // Entries 2..511 remain unmapped (zeroed) for dynamic Kernel Stack Arena allocations.
 
     // 5. Install kernel_pd into pdpt_table[510] through HHDM
     let pdpt_phys = (&raw const pdpt_table as u64) - KERNEL_VIRT_BASE;

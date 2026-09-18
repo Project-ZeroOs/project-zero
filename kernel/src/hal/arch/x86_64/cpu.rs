@@ -29,6 +29,54 @@ pub unsafe fn outb(port: u16, value: u8) {
     );
 }
 
+/// Reads a 16-bit word from the specified x86 I/O port.
+#[inline(always)]
+pub unsafe fn inw(port: u16) -> u16 {
+    let value: u16;
+    asm!(
+        "in ax, dx",
+        in("dx") port,
+        out("ax") value,
+        options(nomem, nostack, preserves_flags)
+    );
+    value
+}
+
+/// Writes a 16-bit word to the specified x86 I/O port.
+#[inline(always)]
+pub unsafe fn outw(port: u16, value: u16) {
+    asm!(
+        "out dx, ax",
+        in("dx") port,
+        in("ax") value,
+        options(nomem, nostack, preserves_flags)
+    );
+}
+
+/// Reads a 32-bit double-word from the specified x86 I/O port.
+#[inline(always)]
+pub unsafe fn inl(port: u16) -> u32 {
+    let value: u32;
+    asm!(
+        "in eax, dx",
+        in("dx") port,
+        out("eax") value,
+        options(nomem, nostack, preserves_flags)
+    );
+    value
+}
+
+/// Writes a 32-bit double-word to the specified x86 I/O port.
+#[inline(always)]
+pub unsafe fn outl(port: u16, value: u32) {
+    asm!(
+        "out dx, eax",
+        in("dx") port,
+        in("eax") value,
+        options(nomem, nostack, preserves_flags)
+    );
+}
+
 /// Brief I/O delay by writing to an unused legacy motherboard port (0x80).
 #[inline(always)]
 pub unsafe fn io_wait() {
@@ -252,11 +300,41 @@ pub fn write_msr(msr: u32, val: u64) {
 /// IA32_EFER Model-Specific Register address
 pub const IA32_EFER: u32 = 0xC0000080;
 
+/// IA32_GS_BASE Model-Specific Register address
+pub const IA32_GS_BASE: u32 = 0xC0000101;
+
+/// Architectural offset of current_thread in PerCpu
+pub const PERCPU_CURRENT_THREAD_OFFSET: u32 = 16;
+
 /// Enables the No-Execute Enable (NXE) bit (bit 11) in IA32_EFER.
 #[inline(always)]
 pub fn enable_nxe() {
     let efer = read_msr(IA32_EFER);
     write_msr(IA32_EFER, efer | (1 << 11));
+}
+
+/// Reads the IA32_GS_BASE MSR.
+#[inline(always)]
+pub fn get_gs_base() -> u64 {
+    read_msr(IA32_GS_BASE)
+}
+
+/// Writes the IA32_GS_BASE MSR.
+#[inline(always)]
+pub fn set_gs_base(base: u64) {
+    write_msr(IA32_GS_BASE, base);
+}
+
+/// Reads a 64-bit value from GS-relative offset 16 (PERCPU_CURRENT_THREAD_OFFSET).
+#[inline(always)]
+pub unsafe fn read_gs_u64_at_16() -> u64 {
+    let val: u64;
+    asm!(
+        "mov {}, qword ptr gs:[16]",
+        out(reg) val,
+        options(nostack, preserves_flags)
+    );
+    val
 }
 
 /// CPU Hardware State Snapshot for Stage 1 diagnostics.

@@ -10,7 +10,7 @@
 
 use crate::kprintln;
 use crate::hal::arch::x86_64::gdt::{
-    get_kernel_image_range, get_kernel_stack_range, get_page_tables_range,
+    get_kernel_image_range, get_kernel_bss_range, get_kernel_stack_range, get_page_tables_range,
     get_ist1_stack_range, get_gdt_range, get_tss_range, get_idt_range,
     get_stack_guard_range,
 };
@@ -380,6 +380,10 @@ pub fn parse_memory_map(
     // Kernel Image Code & Data [.text, .rodata, .data]
     let kimage = get_kernel_image_range();
     inv.add_reservation(kimage.name, kimage.start, kimage.end);
+
+    // Kernel BSS Storage [.bss]
+    let kbss = get_kernel_bss_range();
+    inv.add_reservation(kbss.name, kbss.start, kbss.end);
 
     // Early 4-Level Page Tables
     let ptables = get_page_tables_range();

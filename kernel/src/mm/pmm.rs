@@ -245,6 +245,18 @@ impl PhysicalMemoryManager {
         unsafe { &mut *(&raw mut PMM_METADATA) }
     }
 
+    /// Returns the current number of free physical frames.
+    #[inline(always)]
+    pub fn free_frame_count(&self) -> usize {
+        self.free_frames
+    }
+
+    /// Returns the current number of allocated physical frames.
+    #[inline(always)]
+    pub fn allocated_frame_count(&self) -> usize {
+        self.allocated_frames
+    }
+
     /// Reads the authoritative state of a frame by index.
     #[inline(always)]
     pub fn get_state(&self, idx: usize) -> FrameState {

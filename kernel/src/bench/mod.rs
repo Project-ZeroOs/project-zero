@@ -8,7 +8,7 @@ use crate::kprintln;
 use crate::mm::pmm::{PMM, PhysFrame};
 use crate::mm::vmm::{ActivePageTable, Page, VirtualAddress, PageFlags, MappingDomain};
 use crate::mm::heap::ALLOCATOR;
-use crate::ipc::{IpcEndpoint, IpcMessage};
+use crate::ipc::IpcMessage;
 
 /// Reads the current 64-bit Time Stamp Counter (RDTSC).
 #[inline(always)]
@@ -72,16 +72,17 @@ pub fn run_benchmarks() -> BenchmarkResults {
     let heap_alloc_cycles = t7 - t6;
     let heap_dealloc_cycles = t8 - t7;
 
-    // 4. Synchronous IPC Rendezvous Latency
-    let mut ep = IpcEndpoint::new();
-    let msg = IpcMessage::new(1, 0xAA, 10, 20, 30, 40);
+    // 4. Bounded ChannelRing Message Passing Latency
+    let mut ring = crate::ipc::ChannelRing::empty();
+    let msg = IpcMessage::from_words(1, [10, 20, 30, 40, 50, 60]);
 
     let t9 = rdtsc();
-    ep.send_direct(msg);
-    let _received = ep.receive();
+    ring.push(msg);
+    let _received = ring.pop();
     let t10 = rdtsc();
 
     let ipc_rendezvous_cycles = t10 - t9;
+
 
     let results = BenchmarkResults {
         pmm_alloc_cycles,

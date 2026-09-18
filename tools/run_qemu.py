@@ -297,7 +297,8 @@ def build_stage2():
     asm_files = [
         ("boot.asm", "boot.o"),
         ("isr.asm", "isr.o"),
-        ("context.asm", "context.o")
+        ("context.asm", "context.o"),
+        ("trampoline.asm", "trampoline.o")
     ]
     assembled_objs = []
     for src_name, obj_name in asm_files:
@@ -345,6 +346,7 @@ def test_qemu(kernel_image, markers=None):
     qemu_cmd = [
         str(qemu_bin),
         "-kernel", str(kernel_image),
+        "-smp", "4,cores=4",
         "-display", "none",
         "-serial", "stdio",
         "-monitor", "none",
@@ -364,7 +366,11 @@ def test_qemu(kernel_image, markers=None):
         stdout, stderr = proc.communicate(timeout=8)
     except subprocess.TimeoutExpired:
         proc.kill()
+        stdout, stderr = proc.communicate()
         print("[TIMEOUT] QEMU did not terminate within 8 seconds.")
+        print("\n------------------- CAPTURED SERIAL STREAM (TIMEOUT) -------------------")
+        print(stdout)
+        print("------------------------------------------------------------------------\n")
         return False, "QEMU execution timed out."
 
     elapsed = time.time() - start_time

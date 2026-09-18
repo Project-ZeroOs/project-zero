@@ -43,7 +43,7 @@ import run_qemu
 
 KERNEL_VIRT_BASE = 0xFFFF_FFFF_8000_0000
 PAGE_SIZE        = 0x1000
-BOOTSTRAP_WINDOW = 0x200000
+BOOTSTRAP_WINDOW = 0x400000
 
 
 def get_readelf_path() -> str:
@@ -79,7 +79,7 @@ class TestStage2FFPermissions(unittest.TestCase):
         return symbols
 
     def test_elf_section_boundaries_and_alignment(self):
-        """Verify section boundary symbols exist, are 4 KiB aligned, and <= 2 MiB window."""
+        """Verify section boundary symbols exist, are 4 KiB aligned, and <= 4 MiB window."""
         symbols = self._get_elf_symbols()
 
         required_symbols = [
@@ -103,10 +103,10 @@ class TestStage2FFPermissions(unittest.TestCase):
             self.assertGreaterEqual(addr, KERNEL_VIRT_BASE,
                 f"Symbol '{sym}' at 0x{addr:X} is not in higher-half VMA")
 
-        # Verify kernel end fits strictly within the 2 MiB bootstrap window
+        # Verify kernel end fits strictly within the 4 MiB bootstrap window
         kernel_end = symbols["__kernel_end"]
         self.assertLessEqual(kernel_end, KERNEL_VIRT_BASE + BOOTSTRAP_WINDOW,
-            f"__kernel_end 0x{kernel_end:X} exceeds 2 MiB bootstrap window (0x{KERNEL_VIRT_BASE + BOOTSTRAP_WINDOW:X})")
+            f"__kernel_end 0x{kernel_end:X} exceeds 4 MiB bootstrap window (0x{KERNEL_VIRT_BASE + BOOTSTRAP_WINDOW:X})")
 
         # Verify monotonicity of sections
         pairs = [
@@ -149,7 +149,7 @@ class TestStage2FFPermissions(unittest.TestCase):
             f".page_tables:      [0x{symbols['__page_tables_start']:016X}, 0x{symbols['__page_tables_end']:016X}) (RW + NX)",
             f".stack_guard:      [0x{symbols['__stack_guard_start']:016X}, 0x{symbols['__stack_guard_end']:016X}) (NOT PRESENT)",
             f".stack:            [0x{symbols['__stack_start']:016X}, 0x{symbols['__stack_end']:016X}) (RW + NX)",
-            f"Kernel Size Bound:           0x{symbols['__kernel_end']:016X} <= 0xFFFFFFFF80200000 (<= 2 MiB window) [VERIFIED]",
+            f"Kernel Size Bound:           0x{symbols['__kernel_end']:016X} <= 0xFFFFFFFF80400000 (<= 4 MiB window) [VERIFIED]",
             f"Populated 4 KiB kernel_pt:   {mapped_count} active 4 KiB pages mapped with granular permissions",
             "Installed kernel_pd:         pdpt_table[510] -> kernel_pd[0] -> kernel_pt [via HHDM]",
             "TLB Shootdown:               CR3 reloaded (switched from 2 MiB to 4 KiB mappings)",

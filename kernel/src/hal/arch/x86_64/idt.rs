@@ -101,6 +101,10 @@ extern "C" {
     fn isr_24(); fn isr_25(); fn isr_26(); fn isr_27();
     fn isr_28(); fn isr_29(); fn isr_30(); fn isr_31();
     fn isr_32();
+    fn isr_251();
+    fn isr_252();
+    fn isr_253();
+    fn isr_255();
 
     // Controlled test trampolines defined in boot/isr.asm
     pub fn test_trigger_ud();
@@ -194,13 +198,23 @@ pub fn init_idt() {
         // Vector 32: Hardware Timer IRQ0
         IDT[32].set_handler(isr_32 as usize, 0);
 
-        let idtr = IdtrDescriptor {
-            limit: (core::mem::size_of::<[IdtEntry; 256]>() - 1) as u16,
-            base: (&raw const IDT) as u64,
-        };
+        // Stage 3N IPI Vectors: 251 (Stop), 252 (Resched), 253 (TLB), 255 (Spurious)
+        IDT[251].set_handler(isr_251 as usize, 0);
+        IDT[252].set_handler(isr_252 as usize, 0);
+        IDT[253].set_handler(isr_253 as usize, 0);
+        IDT[255].set_handler(isr_255 as usize, 0);
 
-        load_idt(&idtr);
+        load_current_cpu_idt();
     }
+}
+
+/// Loads the architectural IDT descriptor on the currently executing CPU.
+pub unsafe fn load_current_cpu_idt() {
+    let idtr = IdtrDescriptor {
+        limit: (core::mem::size_of::<[IdtEntry; 256]>() - 1) as u16,
+        base: (&raw const IDT) as u64,
+    };
+    load_idt(&idtr);
 }
 
 pub fn get_exception_name(vector: u64) -> &'static str {
