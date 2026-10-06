@@ -1,19 +1,23 @@
 //! ZeroOS - Display Surface Authority Daemon (`surfaced`)
 //!
-//! Authoritative Contract: Stage 5 Architecture Specification Rev4 (Frozen) & ADR-0031.
-//! Implementation Plan: Stage 5 Implementation Plan Rev2.
+//! Authoritative Contract: Stage 6F Architecture Specification Rev7 (Frozen).
+//! Implementation Plan: Stage 6F Implementation Plan Rev2.
 //!
 //! Responsibilities:
-//! - Manages presentation surface registration and spatial context mapping to Stage 4D workspace context graphs.
-//! - Validates Stage 3H capability derivation rules ($C_{ws} \to C_{surf}$).
-//! - Acquires composition memory leases from Stage 4B `resourced` (`MAX_SURFACE_RAM_MB`).
+//! - Sole authoritative owner of `SurfaceSemanticGeneration`.
+//! - Manages presentation surface registration and spatial context mapping.
+//! - Enforces Stage 3H capability derivation rules ($C_{ws} \to C_{surf}$).
+//! - Acquires composition memory leases from Stage 4B `resourced`.
 //! - Validates `SURFACE_TYPE_AUTH_OVERLAY` requests against active `AuthorizationTransactionRef` state from `agentd`.
-//! - Handles ephemeral surface reconstruction without persisting handles to ZeroFS.
 
 #![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_main)]
 
+#[cfg(not(test))]
 use core::panic::PanicInfo;
+#[cfg(not(test))]
+use libzero::syscall::sys_exit;
+
 use libzero::error::ZeroError;
 use libzero::identity::DistributedIdAllocator;
 use libzero::ipc::IpcMessage;
@@ -27,6 +31,9 @@ pub struct SurfaceDaemon {
     pub surfaces: [PresentationSurfaceDescriptor; MAX_COMPOSITOR_SURFACES],
     pub total_allocated_ram_bytes: usize,
     pub max_ram_quota_bytes: usize,
+
+    // Stage 6F Semantic Generation Ownership
+    pub semantic_generation: u64,
 }
 
 impl SurfaceDaemon {
@@ -39,7 +46,14 @@ impl SurfaceDaemon {
             surfaces: [PresentationSurfaceDescriptor::default(); MAX_COMPOSITOR_SURFACES],
             total_allocated_ram_bytes: 0,
             max_ram_quota_bytes: MAX_SURFACE_RAM_MB * 1024 * 1024, // Stage 4B lease limit
+            semantic_generation: 1,
         }
+    }
+
+    /// Semantic Generation Increment (owned by `surfaced`).
+    pub fn increment_semantic_gen(&mut self) -> u64 {
+        self.semantic_generation += 1;
+        self.semantic_generation
     }
 
     pub fn dispatch(&mut self, req: &IpcMessage) -> IpcMessage {
@@ -90,12 +104,9 @@ impl SurfaceDaemon {
         let width = u32::from_le_bytes(req.payload[20..24].try_into().unwrap());
         let height = u32::from_le_bytes(req.payload[24..28].try_into().unwrap());
 
-        // Check for optional requested surface type (payload byte 28) and auth transaction ref
         let requested_type = if req.payload_len >= 29 { req.payload[28] } else { SURFACE_TYPE_REGULAR };
 
-        // Security Boundary: Setting SURFACE_TYPE_AUTH_OVERLAY requires a valid AuthorizationTransactionRef payload
         if requested_type == SURFACE_TYPE_AUTH_OVERLAY {
-            // Unprivileged requests without valid auth transaction payload (min length 45 bytes) are REJECTED
             if req.payload_len < 45 {
                 resp.payload[0..4].copy_from_slice(&(ZeroError::PermissionDenied.as_i32().to_le_bytes()));
                 resp.payload_len = 4;
@@ -105,7 +116,6 @@ impl SurfaceDaemon {
 
         let required_ram_bytes = (width * height * DISPLAY_BYTES_PER_PIXEL) as usize;
 
-        // Stage 4B Resource Lease Accounting Integration: Check memory quota
         if self.total_allocated_ram_bytes + required_ram_bytes > self.max_ram_quota_bytes {
             resp.payload[0..4].copy_from_slice(&(ZeroError::QuotaExceeded.as_i32().to_le_bytes()));
             resp.payload_len = 4;
@@ -128,6 +138,8 @@ impl SurfaceDaemon {
         self.active_surface_count += 1;
         self.total_allocated_ram_bytes += required_ram_bytes;
 
+        self.increment_semantic_gen();
+
         resp.payload[0..4].copy_from_slice(&(ZeroError::Success.as_i32().to_le_bytes()));
         resp.payload[4..12].copy_from_slice(&surface_id.to_le_bytes());
         resp.payload_len = 12;
@@ -146,9 +158,7 @@ impl SurfaceDaemon {
 
         let requested_z = req.payload[28];
 
-        // Security Boundary: Remote presentation surfaces are strictly restricted to application workspace layers (z <= 99)
         if requested_z >= 100 {
-            // Unprivileged remote requests attempting z >= 100 or z = 255 without valid local capability are REJECTED
             if req.handles_count == 0 {
                 resp.payload[0..4].copy_from_slice(&(ZeroError::PermissionDenied.as_i32().to_le_bytes()));
                 resp.payload_len = 4;
@@ -183,6 +193,8 @@ impl SurfaceDaemon {
         self.surfaces[self.active_surface_count] = desc;
         self.active_surface_count += 1;
 
+        self.increment_semantic_gen();
+
         resp.payload[0..4].copy_from_slice(&(ZeroError::Success.as_i32().to_le_bytes()));
         resp.payload[4..12].copy_from_slice(&surface_id.to_le_bytes());
         resp.payload_len = 12;
@@ -211,6 +223,7 @@ impl SurfaceDaemon {
                     self.surfaces[i] = self.surfaces[i + 1];
                 }
                 self.active_surface_count -= 1;
+                self.increment_semantic_gen();
                 Ok(())
             }
             None => Err(ZeroError::NotFound),
@@ -218,12 +231,28 @@ impl SurfaceDaemon {
     }
 }
 
+#[cfg(not(test))]
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
-    loop {}
+    let _daemon = SurfaceDaemon::new(1);
+    unsafe { sys_exit(0); }
 }
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    loop {}
+    unsafe { sys_exit(1); }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_surface_semantic_generation_ownership() {
+        let mut daemon = SurfaceDaemon::new(1);
+        assert_eq!(daemon.semantic_generation, 1);
+        daemon.increment_semantic_gen();
+        assert_eq!(daemon.semantic_generation, 2);
+    }
 }

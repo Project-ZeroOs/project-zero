@@ -37,6 +37,8 @@ pub enum ZeroError {
     ProviderConfirmationRequired = -29,
     QuotaExceeded = -30,
     CyclicDependency = -31,
+    StaleSpatialIndex = -32,
+    StaleSessionEpoch = -33,
     Unknown = -99,
 }
 
@@ -75,6 +77,8 @@ impl ZeroError {
             -29 => Self::ProviderConfirmationRequired,
             -30 => Self::QuotaExceeded,
             -31 => Self::CyclicDependency,
+            -32 => Self::StaleSpatialIndex,
+            -33 => Self::StaleSessionEpoch,
             _ => Self::Unknown,
         }
     }

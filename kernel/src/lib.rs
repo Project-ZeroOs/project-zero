@@ -348,6 +348,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64, multiboot_magic: u64) -> ! {
     // 46. Stage 6E: Human-Agent Telemetry, Interactive Feedback & Workflow Synthesis Subsystem Verification
     stage4::run_stage6e_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
 
+    // 47. Stage 6F: Agent Spatial Grounding & Session Continuity Subsystem Verification
+    stage4::run_stage6f_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
     // Signal success to QEMU isa-debug-exit (0x10 -> exit code 33)
     unsafe { cpu::outb(0xF4, 0x10); }
 
