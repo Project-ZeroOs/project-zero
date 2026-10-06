@@ -345,6 +345,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64, multiboot_magic: u64) -> ! {
     // 45. Stage 6D: Human Intent, Intent Resolution & Action/Workflow Boundary Subsystem Verification
     stage4::run_stage6d_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
 
+    // 46. Stage 6E: Human-Agent Telemetry, Interactive Feedback & Workflow Synthesis Subsystem Verification
+    stage4::run_stage6e_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
     // Signal success to QEMU isa-debug-exit (0x10 -> exit code 33)
     unsafe { cpu::outb(0xF4, 0x10); }
 

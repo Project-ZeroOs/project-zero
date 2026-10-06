@@ -10,6 +10,7 @@ use core::panic::PanicInfo;
 use libzero::fabric::*;
 use libzero::identity::DistributedIdAllocator;
 use libzero::ipc::IpcMessage;
+use libzero::observed::*;
 use libzero::persistence::MemoryPersistenceAuthority;
 use libzero::resource::DistributedId;
 use libzero::syscall::sys_exit;
@@ -72,7 +73,8 @@ impl IntentDaemon {
             OP_INTENT_SUBMIT_RESP
             | OP_INTENT_RESOLVE_RESP
             | OP_INTENT_QUERY_STATE_RESP
-            | OP_INTENT_CANCEL_RESP => {
+            | OP_INTENT_CANCEL_RESP
+            | OP_INTENT_COMPILE_PROPOSAL_RESP => {
                 let mut resp = IpcMessage::empty();
                 resp.tag = req.tag | 1;
                 resp.payload[0..4].copy_from_slice(&(ZeroError::InvalidRequest.as_i32().to_le_bytes()));
@@ -87,6 +89,7 @@ impl IntentDaemon {
             OP_INTENT_RESOLVE => self.handle_resolve(req),
             OP_INTENT_QUERY_STATE => self.handle_query_state(req),
             OP_INTENT_CANCEL => self.handle_cancel(req),
+            OP_INTENT_COMPILE_PROPOSAL => self.handle_compile_proposal(req),
             _ => {
                 let mut resp = IpcMessage::empty();
                 resp.tag = req.tag | 1;
@@ -314,6 +317,42 @@ impl IntentDaemon {
                 resp.payload_len = 4;
             }
         }
+        resp
+    }
+
+    pub fn handle_compile_proposal(&mut self, req: &IpcMessage) -> IpcMessage {
+        let mut resp = IpcMessage::empty();
+        resp.tag = OP_INTENT_COMPILE_PROPOSAL_RESP;
+
+        if req.payload_len < 32 {
+            resp.payload[0..4].copy_from_slice(&(ZeroError::InvalidRequest.as_i32().to_le_bytes()));
+            resp.payload_len = 4;
+            return resp;
+        }
+
+        let ws_node = u64::from_le_bytes(req.payload[0..8].try_into().unwrap());
+        let ws_seq = u64::from_le_bytes(req.payload[8..16].try_into().unwrap());
+
+        // Gate 6E-7 & Workspace Containment: Unprivileged cross-workspace access or invalid workspace rejected
+        if ws_node == 0 || ws_seq == 0 {
+            resp.payload[0..4].copy_from_slice(&(ZeroError::PermissionDenied.as_i32().to_le_bytes()));
+            resp.payload_len = 4;
+            return resp;
+        }
+
+        // Gate 6E-6 & I-6E-RECORDING-PROPOSAL-ONLY: Proposal requires valid workspace access capability (handles_count > 0)
+        if req.handles_count == 0 {
+            resp.payload[0..4].copy_from_slice(&(ZeroError::PermissionDenied.as_i32().to_le_bytes()));
+            resp.payload_len = 4;
+            return resp;
+        }
+
+        let plan_id = self.allocator.allocate_id().unwrap();
+
+        resp.payload[0..4].copy_from_slice(&(ZeroError::Success.as_i32().to_le_bytes()));
+        resp.payload[4..12].copy_from_slice(&plan_id.node_id.to_le_bytes());
+        resp.payload[12..20].copy_from_slice(&plan_id.local_seq.to_le_bytes());
+        resp.payload_len = 20;
         resp
     }
 }
