@@ -1,0 +1,19 @@
+[package]
+name = "resourced"
+version = "0.1.0"
+edition = "2021"
+authors = ["ZeroOS Architecture Team"]
+description = "ZeroOS Unified Resource Graph & Local Node Accounting Daemon"
+
+[[bin]]
+name = "resourced"
+path = "src/main.rs"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[dependencies]
+libzero = { path = "../libzero" }

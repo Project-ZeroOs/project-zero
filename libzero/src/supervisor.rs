@@ -146,4 +146,34 @@ impl Supervisor {
             }
         }
     }
+
+    /// Spawns a task process container under supervisor authority (OP_PROCESS_SPAWN).
+    pub fn spawn_task_process(&mut self, _workload_seq: u64, task_id: u16, binary_name: &[u8; 32], _task_cap_handle: u32) -> Result<(u64, u32), ZeroError> {
+        let mut active_count = 0usize;
+        for svc in self.services.iter() {
+            if svc.occupied && svc.state == ServiceLifecycleState::Running {
+                active_count += 1;
+            }
+        }
+
+        // Bounded to MAX_CONCURRENT_RUNNING_TASKS (8 active task processes)
+        if active_count >= 8 {
+            return Err(ZeroError::ObjectTableFull);
+        }
+
+        let idx = match self.declare_service(binary_name, DEFAULT_MAX_RETRIES) {
+            Ok(i) => i,
+            Err(e) => return Err(e),
+        };
+
+        self.transition_starting(idx)?;
+        self.transition_running(idx)?;
+
+        // Assigned ProcessId (PID) derived from service_id + workload_seq
+        let pid = 1000u64 + (self.services[idx].service_id as u64) + (task_id as u64);
+        let control_channel = 0x8000_0000u32 | (self.services[idx].service_id as u32);
+
+        Ok((pid, control_channel))
+    }
 }
+

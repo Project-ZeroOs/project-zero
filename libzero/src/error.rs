@@ -1,4 +1,6 @@
 //! ZeroOS - libzero Error Codes and Definitions
+//!
+//! Authoritative Contract: Stage 4A & Stage 4B Architecture Rev12.
 
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +23,20 @@ pub enum ZeroError {
     WouldBlock = -15,
     PeerClosed = -16,
     Timeout = -17,
+    UnsupportedResourceShape = -18,
+    DimensionLimitExceeded = -19,
+    VectorConservationViolated = -20,
+    CouplingViolation = -21,
+    TimeAuthorityUnavailable = -22,
+    TimeObservationStale = -23,
+    HardwareRegressionDetected = -24,
+    EpochExhaustion = -25,
+    DeadlineExhaustion = -26,
+    IdentifierExhausted = -27,
+    CapacityQuarantined = -28,
+    ProviderConfirmationRequired = -29,
+    QuotaExceeded = -30,
+    CyclicDependency = -31,
     Unknown = -99,
 }
 
@@ -45,6 +61,20 @@ impl ZeroError {
             -15 => Self::WouldBlock,
             -16 => Self::PeerClosed,
             -17 => Self::Timeout,
+            -18 => Self::UnsupportedResourceShape,
+            -19 => Self::DimensionLimitExceeded,
+            -20 => Self::VectorConservationViolated,
+            -21 => Self::CouplingViolation,
+            -22 => Self::TimeAuthorityUnavailable,
+            -23 => Self::TimeObservationStale,
+            -24 => Self::HardwareRegressionDetected,
+            -25 => Self::EpochExhaustion,
+            -26 => Self::DeadlineExhaustion,
+            -27 => Self::IdentifierExhausted,
+            -28 => Self::CapacityQuarantined,
+            -29 => Self::ProviderConfirmationRequired,
+            -30 => Self::QuotaExceeded,
+            -31 => Self::CyclicDependency,
             _ => Self::Unknown,
         }
     }

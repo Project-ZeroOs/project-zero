@@ -363,7 +363,7 @@ def test_qemu(kernel_image, markers=None):
             stderr=subprocess.PIPE,
             text=True
         )
-        stdout, stderr = proc.communicate(timeout=8)
+        stdout, stderr = proc.communicate(timeout=40)
     except subprocess.TimeoutExpired:
         proc.kill()
         stdout, stderr = proc.communicate()

@@ -315,6 +315,30 @@ pub extern "C" fn kernel_main(boot_info_addr: u64, multiboot_magic: u64) -> ! {
     // 35. Stage 4A: Core System Service Runtime & Capability Directory Verification
     stage4::tests::run_stage4a_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
 
+    // 36. Stage 4B: Unified Resource Graph & Local Node Accounting Verification
+    stage4::tests::run_stage4b_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 37. Stage 4C: Workload Orchestration & Task Execution Subsystem Verification
+    stage4::tests::run_stage4c_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 38. Stage 4D: Workspace & Persistent Context Subsystem Verification
+    stage4::tests::run_stage4d_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 39. Stage 4E: Agent Runtime Subsystem Verification
+    stage4::tests::run_stage4e_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 40. Stage 4F: Intent Resolution & Personal Compute Fabric Subsystem Verification
+    stage4::tests::run_stage4f_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 41. Stage 5: User Interaction Substrate & Spatial Presentation Subsystem Verification
+    stage4::tests::run_stage5_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 42. Stage 6A: User Session Substrate & Human Operating Environment Verification
+    stage4::tests::run_stage6a_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
+    // 43. Stage 6B: Distributed Spatial Presentation Protocol Verification
+    stage4::tests::run_stage6b_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
     // Signal success to QEMU isa-debug-exit (0x10 -> exit code 33)
     unsafe { cpu::outb(0xF4, 0x10); }
 

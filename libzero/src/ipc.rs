@@ -3,6 +3,28 @@
 use crate::error::ZeroError;
 use crate::syscall::{sys_channel_close, sys_channel_create, sys_channel_receive, sys_channel_send};
 
+// Stage 4B Protocol Opcodes (0x2001 .. 0x2014)
+pub const OP_RES_REGISTER: u64        = 0x2001;
+pub const OP_RES_REGISTER_RESP: u64   = 0x2002;
+pub const OP_RES_UNREGISTER: u64      = 0x2003;
+pub const OP_RES_UNREGISTER_RESP: u64 = 0x2004;
+pub const OP_RES_DISCOVER: u64        = 0x2005;
+pub const OP_RES_DISCOVER_RESP: u64   = 0x2006;
+pub const OP_RES_QUERY: u64           = 0x2007;
+pub const OP_RES_QUERY_RESP: u64      = 0x2008;
+pub const OP_LEASE_REQUEST: u64       = 0x2009;
+pub const OP_LEASE_REQUEST_RESP: u64  = 0x200A;
+pub const OP_LEASE_RENEW: u64         = 0x200B;
+pub const OP_LEASE_RENEW_RESP: u64    = 0x200C;
+pub const OP_LEASE_RELEASE: u64       = 0x200D;
+pub const OP_LEASE_RELEASE_RESP: u64  = 0x200E;
+pub const OP_LEASE_RECONCILE: u64     = 0x200F;
+pub const OP_LEASE_RECONCILE_RESP: u64 = 0x2010;
+pub const OP_QUOTA_QUERY: u64         = 0x2011;
+pub const OP_QUOTA_QUERY_RESP: u64    = 0x2012;
+pub const OP_ENERGY_GET: u64          = 0x2013;
+pub const OP_ENERGY_GET_RESP: u64     = 0x2014;
+
 /// 80-byte frozen IPC message definition (Stage 3G contract).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
