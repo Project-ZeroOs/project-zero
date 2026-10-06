@@ -33,6 +33,42 @@ pub const OP_SURFACE_UNREGISTER_REMOTE_PROXY: u64 = 0x0715;
 pub const OP_SURFACE_UNREGISTER_REMOTE_PROXY_RESP: u64 = 0x0716;
 pub const OP_SURFACE_QUERY_REMOTE_PROXY: u64 = 0x0717;
 pub const OP_SURFACE_QUERY_REMOTE_PROXY_RESP: u64 = 0x0718;
+pub const OP_UIDS_SET_FOCUS: u64 = 0x0719;
+pub const OP_UIDS_SET_FOCUS_RESP: u64 = 0x071A;
+pub const OP_UIDS_REQUEST_MODAL_LOCK_REV2: u64 = 0x071B;
+pub const OP_UIDS_REQUEST_MODAL_LOCK_REV2_RESP: u64 = 0x071C;
+pub const OP_UIDS_ROUTE_REMOTE_INPUT: u64 = 0x071D;
+pub const OP_UIDS_ROUTE_REMOTE_INPUT_RESP: u64 = 0x071E;
+
+// ============================================================================
+// Stage 6C Capability Object Types
+// ============================================================================
+
+pub const CAP_TYPE_REMOTE_INPUT_POLICY: u32 = 0x0041;
+pub const CAP_TYPE_INPUT_FOCUS_POLICY: u32  = 0x0042;
+pub const CAP_TYPE_SYNTHETIC_INPUT: u32     = 0x0043;
+pub const CAP_TYPE_ACCESSIBILITY_POLICY: u32 = 0x0044;
+pub const CAP_TYPE_AGENT_INPUT: u32          = 0x0045;
+
+// ============================================================================
+// Stage 6C Event Type Enums & Source Provenance
+// ============================================================================
+
+pub const EVENT_TYPE_KEY: u16            = 0x0001;
+pub const EVENT_TYPE_BUTTON: u16         = 0x0002;
+pub const EVENT_TYPE_POINTER_MOTION: u16 = 0x0003;
+pub const EVENT_TYPE_TOUCH: u16          = 0x0004;
+pub const EVENT_TYPE_SCROLL: u16         = 0x0005;
+pub const EVENT_TYPE_DEVICE_STATE: u16   = 0x0006;
+
+pub const INPUT_SOURCE_PHYSICAL: u16      = 0x0000;
+pub const INPUT_SOURCE_ACCESSIBILITY: u16 = 0x0001;
+pub const INPUT_SOURCE_AUTOMATION: u16    = 0x0002;
+pub const INPUT_SOURCE_AGENT: u16         = 0x0003;
+pub const INPUT_SOURCE_REMOTE: u16        = 0x0004;
+pub const INPUT_SOURCE_TRUSTED_AUTH: u16  = 0x0005;
+
+pub const INPUT_EVENT_SIZE: usize = 64;
 
 // ============================================================================
 // System Presentation Constants & Static Bounds
@@ -305,4 +341,65 @@ impl fmt::Display for PresentationSurfaceDescriptor {
         )
     }
 }
+
+// ============================================================================
+// Stage 6C Canonical 64-Byte Input Event ABI (`InputEvent`)
+// ============================================================================
+
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputEventHeader {
+    pub device_id: u64,
+    pub timestamp_monotonic_tsc: u64,
+    pub sequence: u64,
+    pub event_type: u16,
+    pub source_provenance: u16,
+    pub device_generation: u32,
+}
+
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputEventPayload {
+    pub code_or_button: u32,
+    pub x: i32,
+    pub y: i32,
+    pub modifiers: u32,
+    pub touch_id: u32,
+    pub pressure: u32,
+    pub reserved: [u8; 8],
+}
+
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputEvent {
+    pub header: InputEventHeader,
+    pub payload: InputEventPayload,
+}
+
+const _: () = assert!(core::mem::size_of::<InputEvent>() == INPUT_EVENT_SIZE);
+
+impl Default for InputEvent {
+    fn default() -> Self {
+        Self {
+            header: InputEventHeader {
+                device_id: 0,
+                timestamp_monotonic_tsc: 0,
+                sequence: 0,
+                event_type: EVENT_TYPE_KEY,
+                source_provenance: INPUT_SOURCE_PHYSICAL,
+                device_generation: 0,
+            },
+            payload: InputEventPayload {
+                code_or_button: 0,
+                x: 0,
+                y: 0,
+                modifiers: 0,
+                touch_id: 0,
+                pressure: 0,
+                reserved: [0; 8],
+            },
+        }
+    }
+}
+
 

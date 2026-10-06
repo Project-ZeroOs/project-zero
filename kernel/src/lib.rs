@@ -339,6 +339,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64, multiboot_magic: u64) -> ! {
     // 43. Stage 6B: Distributed Spatial Presentation Protocol Verification
     stage4::tests::run_stage6b_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
 
+    // 44. Stage 6C: Human Input, Interaction Routing & Intent Boundary Subsystem Verification
+    stage4::run_stage6c_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
     // Signal success to QEMU isa-debug-exit (0x10 -> exit code 33)
     unsafe { cpu::outb(0xF4, 0x10); }
 
