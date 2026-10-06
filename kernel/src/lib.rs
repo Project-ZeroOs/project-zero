@@ -357,6 +357,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64, multiboot_magic: u64) -> ! {
     // 49. WI-10: VFS-Backed Session Snapshot Persistence Verification
     stage4::run_wi10_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
 
+    // 50. WI-02: zero-exec-lib Application Integration Library Verification
+    stage4::run_wi02_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
     // Signal success to QEMU isa-debug-exit (0x10 -> exit code 33)
     unsafe { cpu::outb(0xF4, 0x10); }
 

@@ -21,7 +21,9 @@ pub mod lease_engine;
 pub mod workload;
 pub mod workspace;
 pub mod agent;
+pub mod exec;
 
+pub use exec::*;
 pub use error::ZeroError;
 pub use ipc::{
     channel_close, channel_create, channel_receive, channel_send, IpcMessage,
