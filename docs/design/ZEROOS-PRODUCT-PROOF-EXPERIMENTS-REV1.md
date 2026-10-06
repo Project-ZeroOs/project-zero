@@ -116,6 +116,7 @@ Workspace contains raw log files (`/logs/q3-bench.log`), diagram file (`/assets/
 - User-space log parser utility and markdown renderer binary in `/bin`.
 - `intentd` plan generation and `workspaced` DAG dispatch.
 - Capability delegation for file read access.
+- *Application Integration Boundary:* Legacy/traditional document applications may require a ZeroOS IPC adapter/wrapper. The experiment evaluates the ZeroOS orchestration boundary (intent → Workload DAG → capability delegation) independently from application-specific integration.
 
 #### 11. Evidence to Collect
 - Number of human interventions ($H$).
@@ -139,13 +140,13 @@ Workspace contains raw log files (`/logs/q3-bench.log`), diagram file (`/assets/
 
 #### 15. Failure Classification
 - **Cat A:** Plan confirmation failed due to UI input focus timing.
-- **Cat B:** Markdown renderer app wrapper IPC protocol mismatch.
+- **Cat B:** Missing Application Integration — Markdown renderer app wrapper or IPC protocol adapter missing/failed. (Failure of an application to ingest capability-mediated input is Category B and must NOT be treated as a ZeroOS architectural defect).
 - **Cat C:** `intentd` DAG builder failed to parse log filename.
 - **Cat D:** Capability engine failed to grant file read access token.
 - **Cat E:** Automated report generation proved less useful than direct manual editing.
 
 #### 16. What The Experiment Must NOT Assume
-Does not assume LLM model can generate perfect prose; evaluates structural document assembly and application IPC coordination.
+Does not assume arbitrary legacy applications automatically support ZeroOS IPC without wrappers; does not assume LLM model generates perfect prose. Evaluates structural document assembly and OS orchestration.
 
 #### 17. How To Keep Small & Reproducible
 Use fixed 50KB test log file and static PNG image asset inside deterministic QEMU test harness script.
@@ -263,6 +264,7 @@ ZeroOS running active Workspace with 2 open application surfaces and 1 running w
 - Stage 6F session snapshot persistence.
 - Fencing proof verification (`receive_fencing_proof`).
 - Workspace recovery logic in `workspaced`.
+- *Recovery Boundary Distinction:* Explicitly separate ZeroOS-managed recovery (workspace/session metadata, spatial window layout, Workload DAG state, ZeroOS-owned persistent context) from Application-owned state (unsaved editor buffers, internal application memory, transient state for apps without a snapshot protocol). Application-internal state loss is Category B (Missing Application Integration) unless demonstrably caused by a ZeroOS recovery primitive defect.
 
 #### 11. Evidence to Collect
 - Time to restore workspace state (seconds).
@@ -275,7 +277,7 @@ ZeroOS running active Workspace with 2 open application surfaces and 1 running w
 - $T$: Target $= 0$ (no fencing nonces or snapshot offsets exposed).
 
 #### 13. Success Criteria
-- 100% spatial and workload state restored without data loss.
+- 100% spatial layout, workspace context, and workload DAG state restored without data loss.
 - $C = 0, R = 0, T = 0$.
 - Memory neutral post-restoration.
 
@@ -285,13 +287,13 @@ ZeroOS running active Workspace with 2 open application surfaces and 1 running w
 
 #### 15. Failure Classification
 - **Cat A:** QEMU disk sync failed before hard reset.
-- **Cat B:** Surface compositor failed to restore window dimensions.
+- **Cat B:** Missing Application Integration — Legacy app internal buffer loss or surface compositor failed to restore window dimensions. (Application-internal state loss is Category B and must NOT be treated as a ZeroOS architectural defect).
 - **Cat C:** `workspaced` recovery parser rejected valid snapshot header.
 - **Cat D:** Fencing proof nonce replay detection flaw.
 - **Cat E:** Session restoration deemed unwanted by users who prefer clean reboots.
 
 #### 16. What The Experiment Must NOT Assume
-Does not assume hardware nvram persistence; relies on durable storage journaling in Stage 6F snapshot format.
+Does not assume ZeroOS automatically restores arbitrary application internal memory buffers; does not assume hardware nvram persistence. Evaluates whether ZeroOS restores overall computing CONTEXT and ongoing work without forcing human manual reconstruction ($C = 0, R = 0$).
 
 #### 17. How To Keep Small & Reproducible
 Automate QEMU power reset via test script after writing 1MB dummy workload state snapshot to disk image.
@@ -554,6 +556,7 @@ Dual-node ZeroOS setup (Node A local desktop, Node B headless compute node linke
 - `fabricd` node discovery and authenticated transport (`Stage 4F`).
 - Cross-node fencing proof validation (`Stage 6F`).
 - Remote DAG node dispatch in `workspaced`.
+- *Remote DAG Routing Boundary:* User-space remote DAG scheduling and routing in `workspaced` is a prerequisite for EXP-07. Subsystem roles are strictly divided: `fabricd` is transport/discovery/identity infrastructure, while `workspaced` is workload/DAG execution authority. ZeroOS hides node IDs, IP addresses, SSH keys, credentials, and topology details from the human user. If `workspaced` lacks remote scheduling logic, it must be classified as Category C (Missing User-Space Implementation) and NOT as a Stage 4F/6F architectural defect. The experiment evaluates the product experience once frozen distributed-fabric contracts are exercised end-to-end.
 
 #### 11. Evidence to Collect
 - Serial console logs on Node A and Node B confirming cross-node execution.
@@ -576,12 +579,12 @@ Dual-node ZeroOS setup (Node A local desktop, Node B headless compute node linke
 #### 15. Failure Classification
 - **Cat A:** QEMU tap network interface link down.
 - **Cat B:** Remote binary tool version mismatch between nodes.
-- **Cat C:** `fabricd` message serializing defect in remote DAG payload.
+- **Cat C:** Missing User-Space Implementation — `workspaced` remote DAG node scheduling/dispatch logic incomplete or `fabricd` message serializing defect in remote DAG payload. (Missing remote DAG routing in user-space `workspaced` is Category C and must NOT be treated as a Stage 4F/6F architectural defect).
 - **Cat D:** Fencing proof validation defect in multi-node epoch handshake.
 - **Cat E:** Distributed offloading overhead exceeds local computation speedup.
 
 #### 16. What The Experiment Must NOT Assume
-Does not assume public internet connectivity; operates over local authenticated fabric network.
+Does not assume public internet connectivity; does not invent new routing architecture. Operates over local authenticated fabric network contracts.
 
 #### 17. How To Keep Small & Reproducible
 Run dual QEMU instances (`node_a` and `node_b`) connected via virtual socket network script.
