@@ -23,9 +23,11 @@ pub mod workspace;
 pub mod agent;
 pub mod exec;
 pub mod term;
+pub mod doc;
 
 pub use exec::*;
 pub use term::*;
+pub use doc::*;
 pub use error::ZeroError;
 pub use ipc::{
     channel_close, channel_create, channel_receive, channel_send, IpcMessage,
