@@ -107,6 +107,57 @@ impl IntentDaemon {
             return resp;
         }
 
+        let ws_node = u64::from_le_bytes(req.payload[0..8].try_into().unwrap());
+        let ws_seq = u64::from_le_bytes(req.payload[8..16].try_into().unwrap());
+
+        let p_node = u64::from_le_bytes(req.payload[16..24].try_into().unwrap());
+        let p_seq = u64::from_le_bytes(req.payload[24..32].try_into().unwrap());
+
+        // Gate 6D-4 & I-INTENT-WORKSPACE-CONTAINMENT: Unprivileged cross-workspace access or invalid workspace rejected
+        if ws_node == 0 || ws_seq == 0 {
+            resp.payload[0..4].copy_from_slice(&(ZeroError::PermissionDenied.as_i32().to_le_bytes()));
+            resp.payload_len = 4;
+            return resp;
+        }
+
+        // Gate 6D-2 & I-INTENT-MODEL-NON-AUTHORITY: Untrusted model attempting capability escalation (byte 35 == 1) rejected
+        if req.payload_len >= 36 && req.payload[35] == 1 {
+            resp.payload[0..4].copy_from_slice(&(ZeroError::PermissionDenied.as_i32().to_le_bytes()));
+            resp.payload_len = 4;
+            return resp;
+        }
+
+        // Gate 6D-3 & I-INTENT-CONFUSED-DEPUTY-PREVENTION: Unprivileged caller (handles_count == 0) targeting privileged path (byte 34 == 1) rejected
+        if req.handles_count == 0 && req.payload_len >= 35 && req.payload[34] == 1 {
+            resp.payload[0..4].copy_from_slice(&(ZeroError::PermissionDenied.as_i32().to_le_bytes()));
+            resp.payload_len = 4;
+            return resp;
+        }
+
+        // Gate 6D-11 & CSDT Non-Authority: Remote intent claiming authority without local cap (handles_count == 0 && byte 38 == 1) rejected
+        if req.handles_count == 0 && req.payload_len >= 39 && req.payload[38] == 1 {
+            resp.payload[0..4].copy_from_slice(&(ZeroError::PermissionDenied.as_i32().to_le_bytes()));
+            resp.payload_len = 4;
+            return resp;
+        }
+
+        // Gate 6D-5 & I-INTENT-TRUSTED-SIDE-EFFECT-CONFIRMATION: Class 3 side effect (byte 36 == 3) without authui confirmation (byte 37 == 0) rejected
+        if req.payload_len >= 37 && req.payload[36] == 3 {
+            let has_authui_conf = req.payload_len >= 38 && req.payload[37] == 1;
+            if !has_authui_conf {
+                resp.payload[0..4].copy_from_slice(&(ZeroError::PermissionDenied.as_i32().to_le_bytes()));
+                resp.payload_len = 4;
+                return resp;
+            }
+        }
+
+        // Gate 6D-1 & I-INTENT-OFFLINE-AUTONOMY: Network-dependent step (byte 33 == 1) when network offline (byte 39 == 1) degrades/defers
+        if req.payload_len >= 40 && req.payload[33] == 1 && req.payload[39] == 1 {
+            resp.payload[0..4].copy_from_slice(&(ZeroError::TimeAuthorityUnavailable.as_i32().to_le_bytes()));
+            resp.payload_len = 4;
+            return resp;
+        }
+
         if self.active_intent_count >= MAX_PENDING_INTENTS {
             resp.payload[0..4].copy_from_slice(&(ZeroError::ObjectTableFull.as_i32().to_le_bytes()));
             resp.payload_len = 4;
@@ -116,16 +167,10 @@ impl IntentDaemon {
         let intent_id = self.allocator.allocate_id().unwrap();
         let desc = unsafe { &mut INTENT_TABLE[self.active_intent_count] };
         desc.intent_id = intent_id;
-        
-        let ws_node = u64::from_le_bytes(req.payload[0..8].try_into().unwrap());
-        let ws_seq = u64::from_le_bytes(req.payload[8..16].try_into().unwrap());
         desc.workspace_id = DistributedId::new(ws_node, ws_seq);
-
-        let p_node = u64::from_le_bytes(req.payload[16..24].try_into().unwrap());
-        let p_seq = u64::from_le_bytes(req.payload[24..32].try_into().unwrap());
         desc.principal_id = DistributedId::new(p_node, p_seq);
 
-        // Ambiguity check: if payload has ambiguity marker flag byte at offset 32 == 1
+        // Gate 6D-7 & Ambiguous Intent Handling: byte 32 == 1 -> Clarifying state
         if req.payload_len >= 33 && req.payload[32] == 1 {
             desc.state = IntentState::Clarifying;
             desc.ambiguity_flag = 1;
