@@ -358,7 +358,7 @@ def test_qemu(kernel_image, markers=None):
     try:
         proc = subprocess.Popen(
             qemu_cmd,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True

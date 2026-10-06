@@ -354,6 +354,9 @@ pub extern "C" fn kernel_main(boot_info_addr: u64, multiboot_magic: u64) -> ! {
     // 48. WI-09: Init Service Daemon Spawning & Supervision Verification
     stage4::run_wi09_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
 
+    // 49. WI-10: VFS-Backed Session Snapshot Persistence Verification
+    stage4::run_wi10_verification(unsafe { &mut *(&raw mut mm::pmm::PMM) }, &mut vmm);
+
     // Signal success to QEMU isa-debug-exit (0x10 -> exit code 33)
     unsafe { cpu::outb(0xF4, 0x10); }
 
