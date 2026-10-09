@@ -4,6 +4,7 @@
 
 use crate::fs::types::*;
 use crate::fs::buf::{read_block_cached, write_block_cached, sync_block, sync_all_buffers};
+use super::inode::InodeManager;
 
 pub struct Journal;
 
@@ -32,10 +33,54 @@ impl Journal {
         Self::write_journal_block(device_id, empty)
     }
 
+    /// Write journal block V2 to disk, enforcing immediate flush.
+    pub fn write_journal_block_v2(device_id: u8, mut jrn: DiskJournalBlockV2) -> Result<(), FsError> {
+        jrn.recompute_checksum();
+        let raw: [u8; BLOCK_SIZE] = unsafe { core::mem::transmute(jrn) };
+        write_block_cached(device_id, JOURNAL_BLOCK, &raw)?;
+        sync_block(device_id, JOURNAL_BLOCK)?;
+        Ok(())
+    }
+
+    /// Read and parse journal block V2 from disk.
+    pub fn read_journal_block_v2(device_id: u8) -> Result<DiskJournalBlockV2, FsError> {
+        let mut raw = [0u8; BLOCK_SIZE];
+        read_block_cached(device_id, JOURNAL_BLOCK, &mut raw)?;
+        let jrn: DiskJournalBlockV2 = unsafe { core::ptr::read(raw.as_ptr() as *const DiskJournalBlockV2) };
+        Ok(jrn)
+    }
+
     /// Crash recovery pass executed during filesystem mount.
-    /// Strictly enforces Invariant I-STOR-JOURNAL-1.
+    /// Strictly enforces Invariant I-STOR-JOURNAL-1 for both V1 and V2 journal schemas.
     pub fn recover(device_id: u8) -> Result<(), FsError> {
-        let mut jrn = Self::read_journal_block(device_id)?;
+        let mut raw = [0u8; BLOCK_SIZE];
+        read_block_cached(device_id, JOURNAL_BLOCK, &mut raw)?;
+
+        let magic = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+        if magic == JOURNAL_MAGIC_V2 {
+            let jrn: DiskJournalBlockV2 = unsafe { core::ptr::read(raw.as_ptr() as *const DiskJournalBlockV2) };
+            if jrn.state == (JournalState::Free as u32) {
+                return Ok(());
+            }
+            if !jrn.is_valid_checksum() {
+                return Err(FsError::CorruptJournal);
+            }
+            match jrn.state {
+                1 => {
+                    Self::rollback_v2(device_id, &jrn)?;
+                    Self::clear(device_id, jrn.sequence)?;
+                }
+                2 => {
+                    Self::rollforward_v2(device_id, &jrn)?;
+                    Self::clear(device_id, jrn.sequence)?;
+                }
+                _ => return Err(FsError::CorruptJournal),
+            }
+            sync_all_buffers(device_id)?;
+            return Ok(());
+        }
+
+        let jrn: DiskJournalBlock = unsafe { core::ptr::read(raw.as_ptr() as *const DiskJournalBlock) };
 
         // If journal is empty, nothing to recover
         if jrn.state == (JournalState::Free as u32) {
@@ -195,6 +240,65 @@ impl Journal {
             }
             write_block_cached(device_id, INODE_BITMAP_BLOCK, &inode_bitmap)?;
         }
+
+        Ok(())
+    }
+
+    fn rollback_v2(device_id: u8, jrn: &DiskJournalBlockV2) -> Result<(), FsError> {
+        if jrn.src_target_inode_num != 0 && jrn.src_target_inode_num < (MAX_INODES as u32) {
+            let _ = InodeManager::write_inode(device_id, jrn.src_target_inode_num, jrn.src_old_inode_image);
+        }
+        if jrn.dst_target_inode_num != 0 && jrn.dst_target_inode_num < (MAX_INODES as u32) {
+            let _ = InodeManager::write_inode(device_id, jrn.dst_target_inode_num, jrn.dst_old_inode_image);
+        }
+
+        if jrn.allocated_blocks_count > 0 {
+            let mut block_bitmap = [0u8; BLOCK_SIZE];
+            read_block_cached(device_id, BLOCK_BITMAP_BLOCK, &mut block_bitmap)?;
+
+            let count = (jrn.allocated_blocks_count as usize).min(10);
+            for &lba in &jrn.allocated_blocks[0..count] {
+                if lba >= (DATA_BLOCK_START as u32) && (lba as u64) < MAX_VOLUME_BLOCKS {
+                    let byte_idx = (lba as usize) / 8;
+                    let bit_idx = (lba as usize) % 8;
+                    block_bitmap[byte_idx] &= !(1 << bit_idx);
+                }
+            }
+            write_block_cached(device_id, BLOCK_BITMAP_BLOCK, &block_bitmap)?;
+        }
+
+        Ok(())
+    }
+
+    fn rollforward_v2(device_id: u8, jrn: &DiskJournalBlockV2) -> Result<(), FsError> {
+        if jrn.src_target_inode_num != 0 && jrn.src_target_inode_num < (MAX_INODES as u32) {
+            let _ = InodeManager::write_inode(device_id, jrn.src_target_inode_num, jrn.src_new_inode_image);
+        }
+        if jrn.dst_target_inode_num != 0 && jrn.dst_target_inode_num < (MAX_INODES as u32) {
+            let _ = InodeManager::write_inode(device_id, jrn.dst_target_inode_num, jrn.dst_new_inode_image);
+        }
+
+        let mut block_bitmap = [0u8; BLOCK_SIZE];
+        read_block_cached(device_id, BLOCK_BITMAP_BLOCK, &mut block_bitmap)?;
+
+        let alloc_count = (jrn.allocated_blocks_count as usize).min(10);
+        for &lba in &jrn.allocated_blocks[0..alloc_count] {
+            if lba >= (DATA_BLOCK_START as u32) && (lba as u64) < MAX_VOLUME_BLOCKS {
+                let byte_idx = (lba as usize) / 8;
+                let bit_idx = (lba as usize) % 8;
+                block_bitmap[byte_idx] |= 1 << bit_idx;
+            }
+        }
+
+        let free_count = (jrn.freed_blocks_count as usize).min(10);
+        for &lba in &jrn.freed_blocks[0..free_count] {
+            if lba >= (DATA_BLOCK_START as u32) && (lba as u64) < MAX_VOLUME_BLOCKS {
+                let byte_idx = (lba as usize) / 8;
+                let bit_idx = (lba as usize) % 8;
+                block_bitmap[byte_idx] &= !(1 << bit_idx);
+            }
+        }
+        write_block_cached(device_id, BLOCK_BITMAP_BLOCK, &block_bitmap)?;
 
         Ok(())
     }

@@ -31,6 +31,10 @@ pub const SYS_NET_RECV: u64        = 28;
 pub const SYS_NET_CLOSE: u64       = 29;
 pub const SYS_NET_QUERY: u64       = 30;
 pub const SYS_NET_CONFIG: u64      = 31;
+pub const SYS_DIR_CREATE: u64      = 32;
+pub const SYS_FILE_UNLINK: u64     = 33;
+pub const SYS_FILE_RENAME: u64     = 34;
+pub const SYS_DIR_READ: u64       = 35;
 
 /// Authoritative ZeroOS Syscall Error Codes
 #[repr(i64)]

@@ -75,4 +75,19 @@ impl<P: PersistenceAuthority> DistributedIdAllocator<P> {
     pub fn persistence_mut(&mut self) -> &mut P {
         &mut self.persistence
     }
+
+    /// Advances the allocation sequence floor (e.g. after loading durable state).
+    pub fn advance_floor(&mut self, floor_seq: u64) -> Result<(), ZeroError> {
+        if floor_seq > self.current_seq {
+            self.current_seq = floor_seq;
+            if self.current_seq >= self.persisted_ceiling {
+                let next_ceiling = self.current_seq
+                    .checked_add(self.batch_size)
+                    .ok_or(ZeroError::IdentifierExhausted)?;
+                self.persistence.write_and_commit_slot(DISTRIBUTED_ID_CEILING_SLOT, next_ceiling)?;
+                self.persisted_ceiling = next_ceiling;
+            }
+        }
+        Ok(())
+    }
 }

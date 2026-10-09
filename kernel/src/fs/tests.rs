@@ -553,4 +553,114 @@ fn test_3k_t_capability_enforcement_and_pmm_neutrality(pmm: &mut PhysicalMemoryM
     kprintln!("  * Storage capability rights verified distinct and non-overlapping");
     kprintln!("  * PMM Neutrality verified: baseline_free ({}) == post_test_free ({})", baseline_free, post_test_free);
     kprintln!("  [PASS] 3K-T");
+
+    test_rev3_filesystem_mutation_suite();
 }
+
+/// REV3 Verification Suite: Journal V2, Directory Mutations, Generation Bumping, Concurrency Policy A
+fn test_rev3_filesystem_mutation_suite() {
+    kprintln!("\n[REV3] Running Filesystem Mutation & Directory Operations Verification...");
+
+    // 1. Layout & Size assertions
+    assert_eq!(core::mem::size_of::<DiskJournalBlockV2>(), 4096, "DiskJournalBlockV2 MUST be exactly 4096 bytes");
+    assert_eq!(core::mem::size_of::<UserDirEntry>(), 64, "UserDirEntry MUST be exactly 64 bytes");
+    assert_eq!(crate::cap::types::cap_rights::MUTATE, 0x8000, "MUTATE capability right MUST be 0x8000");
+
+    kprintln!("  * REV3 exact 4096-byte journal layout and 0x8000 MUTATE capability bit verified");
+
+    // 2. Generation bumping & overflow rule test
+    let mut inode = DiskInode::empty();
+    inode.file_type = InodeType::Directory as u16;
+    inode.generation = 1;
+    assert_eq!(inode.generation, 1);
+    inode.bump_generation();
+    assert_eq!(inode.generation, 2);
+    inode.generation = u32::MAX;
+    inode.bump_generation();
+    assert_eq!(inode.generation, 1, "Generation overflow MUST skip 0 and wrap to 1");
+
+    kprintln!("  * Generation wrapping rule (skipping 0) verified");
+
+    // 3. Journal V2 checksum and serialization roundtrip
+    let mut jrn = DiskJournalBlockV2::empty();
+    jrn.sequence = 100;
+    jrn.op_type = JournalOpType::Rename as u32;
+    jrn.state = JournalState::Committed as u32;
+    jrn.src_parent_dir_inode = 2;
+    jrn.dst_parent_dir_inode = 3;
+    jrn.recompute_checksum();
+    assert!(jrn.is_valid_checksum(), "Journal V2 CRC32 verification failed");
+
+    kprintln!("  * Journal V2 checksum roundtrip verified");
+
+    // 4. Directory Mutation & Generation Bumping Test
+    init_cache();
+    unsafe { crate::fs::dev::MEM_DEVICE.reset(); }
+    format_volume(0, 256, b"REV3_VOL").expect("format_volume failed");
+    let (inum_dir_a, _, _) = DirectoryManager::create_dir(0, ROOT_DIR_INODE, b"dir_a", 1).unwrap();
+    let dir_a_init = InodeManager::read_inode(0, inum_dir_a).unwrap();
+    let gen_a0 = dir_a_init.generation;
+
+    // Create dir
+    let res_mkdir = DirectoryManager::create_dir(0, inum_dir_a, b"subdir1", 1);
+    assert!(res_mkdir.is_ok(), "create_dir failed");
+    let gen_a1 = InodeManager::read_inode(0, inum_dir_a).unwrap().generation;
+    assert_eq!(gen_a1, gen_a0.wrapping_add(1), "create_dir MUST increment parent generation");
+
+    // Unlink dir entry
+    let res_unlink = DirectoryManager::unlink(0, inum_dir_a, b"subdir1");
+    assert!(res_unlink.is_ok(), "unlink failed");
+    let gen_a2 = InodeManager::read_inode(0, inum_dir_a).unwrap().generation;
+    assert_eq!(gen_a2, gen_a1.wrapping_add(1), "unlink MUST increment parent generation");
+
+    // Same-directory rename
+    let sub2_inum = InodeManager::alloc_inode(0, InodeType::Regular, 1).unwrap();
+    let mut sub2_inode = InodeManager::read_inode(0, sub2_inum).unwrap();
+    sub2_inode.links_count = 2;
+    InodeManager::write_inode(0, sub2_inum, sub2_inode).unwrap();
+    DirectoryManager::insert(0, inum_dir_a, b"old_name", sub2_inum, InodeType::Regular).unwrap();
+    let gen_a3 = InodeManager::read_inode(0, inum_dir_a).unwrap().generation;
+
+    let res_rename = DirectoryManager::rename(0, inum_dir_a, b"old_name", inum_dir_a, b"new_name", 0, 1);
+    assert!(res_rename.is_ok(), "same-directory rename failed");
+    let gen_a4 = InodeManager::read_inode(0, inum_dir_a).unwrap().generation;
+    assert_eq!(gen_a4, gen_a3.wrapping_add(2), "same-directory rename MUST increment parent generation once per insert and unlink");
+
+    // Cross-directory rename
+    let (inum_dir_b, _, _) = DirectoryManager::create_dir(0, ROOT_DIR_INODE, b"dir_b", 1).unwrap();
+    let gen_b0 = InodeManager::read_inode(0, inum_dir_b).unwrap().generation;
+
+    let res_cross = DirectoryManager::rename(0, inum_dir_a, b"new_name", inum_dir_b, b"moved_name", 0, 1);
+    assert!(res_cross.is_ok(), "cross-directory rename failed");
+    let gen_a5 = InodeManager::read_inode(0, inum_dir_a).unwrap().generation;
+    let gen_b1 = InodeManager::read_inode(0, inum_dir_b).unwrap().generation;
+    assert_eq!(gen_a5, gen_a4.wrapping_add(1), "cross-directory rename MUST increment src parent generation");
+    assert_eq!(gen_b1, gen_b0.wrapping_add(1), "cross-directory rename MUST increment dst parent generation");
+
+    kprintln!("  * Exhaustive Directory Mutations (create_dir, unlink, same-dir rename, cross-dir rename) & dual generation increments verified");
+
+    // 5. SYS_DIR_READ Policy A Generation Mismatch Test
+    let mut user_buf = [UserDirEntry {
+        inode_number: 0,
+        file_type: 0,
+        name_len: 0,
+        reserved: 0,
+        name: [0u8; 56],
+    }; 4];
+
+    // Read offset 0 -> captures generation
+    let (count1, captured_gen) = DirectoryManager::read_entries(0, inum_dir_b, 0, 0, &mut user_buf).unwrap();
+    assert_eq!(count1, 1, "dir_b should contain 1 entry (moved_name)");
+    assert_ne!(captured_gen, 0);
+
+    // Mutate directory while reader holds captured_gen
+    DirectoryManager::create_dir(0, inum_dir_b, b"another_dir", 1).unwrap();
+
+    // Read offset > 0 with stale captured_gen -> MUST return FsError::Busy (-EBUSY / ResourceConflict)
+    let res_stale_read = DirectoryManager::read_entries(0, inum_dir_b, 1, captured_gen, &mut user_buf);
+    assert_eq!(res_stale_read, Err(FsError::Busy), "SYS_DIR_READ Policy A MUST return FsError::Busy on generation mismatch");
+
+    kprintln!("  * SYS_DIR_READ Policy A (ResourceConflict / -EBUSY on generation mismatch) verified");
+    kprintln!("  [PASS] REV3 Verification Suite");
+}
+

@@ -20,6 +20,7 @@ pub mod dev;
 pub mod net;
 pub mod smp;
 pub mod stage4;
+pub mod boot_logo;
 
 use core::alloc::GlobalAlloc;
 use core::panic::PanicInfo;
@@ -65,6 +66,14 @@ pub extern "C" fn kernel_main(boot_info_addr: u64, multiboot_magic: u64) -> ! {
     kprintln!("PROJECT ZERO");
     kprintln!("Kernel initialized.");
     kprintln!("============================================================");
+
+    // Render Official ZeroOS Boot Logo if linear framebuffer is available
+    if boot_info_addr != 0 {
+        let mb_ptr = boot_info_addr as *const mm::inventory::MultibootInfo;
+        unsafe {
+            boot_logo::render_boot_logo(&*mb_ptr);
+        }
+    }
 
     // 2. CPU Hardware Initialization (GDT & TSS, then IDT)
     init_gdt();

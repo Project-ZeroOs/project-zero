@@ -1366,12 +1366,16 @@ static mut TEST_WORKSPACES: [libzero::workspace::WorkspaceControlBlock; libzero:
         _pad0: [0; 3],
         capability_envelope_handle: 0,
         active_workload_count: 0,
-        _pad1: [0; 3],
+        active_agent_count: 0,
+        membership_count: 0,
         associated_workloads: [libzero::resource::DistributedId { node_id: 0, local_seq: 0 }; libzero::workspace::MAX_WORKLOADS_PER_WORKSPACE],
+        associated_agents: [libzero::resource::DistributedId { node_id: 0, local_seq: 0 }; libzero::workspace::MAX_AGENTS_PER_WORKSPACE],
+        intent_node_count: 0,
+        intent_dep_count: 0,
         root_dir_handle: 0,
         resident_node_count: 0,
         resident_edge_count: 0,
-        _padding: [0; 460],
+        _padding: [0; 196],
     } }; libzero::workspace::MAX_WORKSPACES];
 
 static mut TEST_RESIDENT_NODES: [[libzero::workspace::ContextNode; 32]; libzero::workspace::MAX_WORKSPACES] =
@@ -1401,12 +1405,16 @@ impl WorkspacedDaemonHelper {
                 _pad0: [0; 3],
                 capability_envelope_handle: 0,
                 active_workload_count: 0,
-                _pad1: [0; 3],
+                active_agent_count: 0,
+                membership_count: 0,
                 associated_workloads: [libzero::resource::DistributedId { node_id: 0, local_seq: 0 }; libzero::workspace::MAX_WORKLOADS_PER_WORKSPACE],
+                associated_agents: [libzero::resource::DistributedId { node_id: 0, local_seq: 0 }; libzero::workspace::MAX_AGENTS_PER_WORKSPACE],
+                intent_node_count: 0,
+                intent_dep_count: 0,
                 root_dir_handle: 0,
                 resident_node_count: 0,
                 resident_edge_count: 0,
-                _padding: [0; 460],
+                _padding: [0; 196],
             } }; libzero::workspace::MAX_WORKSPACES];
             TEST_RESIDENT_NODES = [const { [const { libzero::workspace::ContextNode {
                 node_id: 0,

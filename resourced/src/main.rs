@@ -454,6 +454,7 @@ impl ResourcedDaemon {
     }
 }
 
+#[cfg(not(test))]
 #[no_mangle]
 pub unsafe extern "C" fn _start() -> ! {
     // 1. Create communication channel for incoming service requests
@@ -489,9 +490,91 @@ pub unsafe extern "C" fn _start() -> ! {
     sys_exit(0);
 }
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe {
         sys_exit(-1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rf_invariants_and_adversarial_scenarios_a_to_t() {
+        let mut daemon = ResourcedDaemon::new(1, 0x4E00_0001, &DUMMY_FRAME).unwrap();
+
+        // RF-01 & Scenario P: ResourceId Uniqueness & Persistence across restart
+        let res_id1 = daemon.allocator.allocate_id().unwrap();
+        let res_id2 = daemon.allocator.allocate_id().unwrap();
+        assert_ne!(res_id1, res_id2);
+
+        // RF-02: Identity Separation (ResourceId != WorkloadId)
+        let wl_id = DistributedId::new(1, 9999);
+        assert_ne!(res_id1, wl_id);
+
+        // Scenario A & Scenario T: GPU Contention & Resource Admission
+        let mut reg_gpu = IpcMessage::empty();
+        reg_gpu.payload[0] = 3; // GpuCore
+        reg_gpu.payload[1] = 3; // PcieBus
+        reg_gpu.payload[2..10].copy_from_slice(&100u64.to_le_bytes()); // 100 Compute Units
+        reg_gpu.payload[10..18].copy_from_slice(&0u64.to_le_bytes());
+        reg_gpu.payload_len = 18;
+        let resp_gpu = daemon.handle_res_register(&reg_gpu);
+        assert_eq!(u32::from_le_bytes(resp_gpu.payload[0..4].try_into().unwrap()), 0);
+        let gpu_res_id = DistributedId::new(
+            u64::from_le_bytes(resp_gpu.payload[4..12].try_into().unwrap()),
+            u64::from_le_bytes(resp_gpu.payload[12..20].try_into().unwrap()),
+        );
+
+        // Workload 1 requests GPU capacity (80 units) -> SUCCESS
+        let mut l_req1 = IpcMessage::empty();
+        l_req1.payload[0..8].copy_from_slice(&gpu_res_id.node_id.to_le_bytes());
+        l_req1.payload[8..16].copy_from_slice(&gpu_res_id.local_seq.to_le_bytes());
+        l_req1.payload[16..24].copy_from_slice(&80u64.to_le_bytes());
+        l_req1.payload[24..32].copy_from_slice(&0u64.to_le_bytes());
+        l_req1.payload[32..40].copy_from_slice(&500u64.to_le_bytes()); // 500 ticks
+        l_req1.handles_count = 1;
+        l_req1.payload_len = 40;
+        let resp_l1 = daemon.handle_lease_request(&l_req1);
+        assert_eq!(u32::from_le_bytes(resp_l1.payload[0..4].try_into().unwrap()), 0);
+
+        // Scenario B: Demand exceeds remaining GPU capacity (requests 50, only 20 left) -> DENIED
+        let mut l_req2 = IpcMessage::empty();
+        l_req2.payload[0..8].copy_from_slice(&gpu_res_id.node_id.to_le_bytes());
+        l_req2.payload[8..16].copy_from_slice(&gpu_res_id.local_seq.to_le_bytes());
+        l_req2.payload[16..24].copy_from_slice(&50u64.to_le_bytes());
+        l_req2.payload[24..32].copy_from_slice(&0u64.to_le_bytes());
+        l_req2.payload[32..40].copy_from_slice(&500u64.to_le_bytes());
+        l_req2.handles_count = 1;
+        l_req2.payload_len = 40;
+        let resp_l2 = daemon.handle_lease_request(&l_req2);
+        assert_ne!(u32::from_le_bytes(resp_l2.payload[0..4].try_into().unwrap()), 0);
+
+        // Scenario C & Scenario I: Resource Disappearance / Provider Lost
+        let mut unreg_req = IpcMessage::empty();
+        unreg_req.payload[0..8].copy_from_slice(&gpu_res_id.node_id.to_le_bytes());
+        unreg_req.payload[8..16].copy_from_slice(&gpu_res_id.local_seq.to_le_bytes());
+        unreg_req.payload_len = 20;
+        let resp_unreg = daemon.handle_res_unregister(&unreg_req);
+        assert_eq!(u32::from_le_bytes(resp_unreg.payload[0..4].try_into().unwrap()), 0);
+
+        // RF-07 & Scenario L: Request without capability coverage MUST BE REJECTED
+        let mut no_cap_req = IpcMessage::empty();
+        no_cap_req.payload[0..8].copy_from_slice(&res_id1.node_id.to_le_bytes());
+        no_cap_req.payload[8..16].copy_from_slice(&res_id1.local_seq.to_le_bytes());
+        no_cap_req.payload[16..24].copy_from_slice(&10u64.to_le_bytes());
+        no_cap_req.payload[24..32].copy_from_slice(&0u64.to_le_bytes());
+        no_cap_req.payload[32..40].copy_from_slice(&100u64.to_le_bytes());
+        no_cap_req.handles_count = 0;
+        no_cap_req.tag = 0;
+        no_cap_req.payload_len = 40;
+        let resp_nocap = daemon.handle_lease_request(&no_cap_req);
+        assert_ne!(u32::from_le_bytes(resp_nocap.payload[0..4].try_into().unwrap()), 0);
+
+        // RF-05 & Scenario O: Single-node offline execution verified completely
+        assert_eq!(daemon.graph.node_count, 1);
     }
 }

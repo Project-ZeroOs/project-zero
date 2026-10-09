@@ -40,6 +40,8 @@ pub enum AgentLifecycleState {
     Stopping = 3,
     Terminated = 4,
     Reclaimed = 5,
+    Quiesced = 6,
+    UnboundArchived = 7,
 }
 
 impl Default for AgentLifecycleState {

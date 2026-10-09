@@ -44,11 +44,43 @@ pub enum WorkloadState {
     Failed = 8,
     Cancelled = 9,
     Reclaimed = 10,
+    Queued = 11,
+    Admitted = 12,
+    Runnable = 13,
+    OrphanCompleting = 14,
 }
 
 impl Default for WorkloadState {
     fn default() -> Self {
         Self::Creating
+    }
+}
+
+impl WorkloadState {
+    /// Enforces frozen REV1 state transition matrix.
+    pub fn can_transition_to(&self, target: WorkloadState) -> bool {
+        if *self == target {
+            return true;
+        }
+        match self {
+            WorkloadState::Creating => matches!(target, WorkloadState::Queued | WorkloadState::Cancelled),
+            WorkloadState::Queued | WorkloadState::Ready => matches!(target, WorkloadState::Admitted | WorkloadState::Cancelled),
+            WorkloadState::Admitted => matches!(target, WorkloadState::Runnable | WorkloadState::Cancelled),
+            WorkloadState::Runnable => matches!(target, WorkloadState::Running | WorkloadState::Suspended | WorkloadState::Cancelled),
+            WorkloadState::Running => matches!(
+                target,
+                WorkloadState::Suspended
+                    | WorkloadState::Completed
+                    | WorkloadState::Failed
+                    | WorkloadState::Cancelled
+                    | WorkloadState::OrphanCompleting
+            ),
+            WorkloadState::Suspended | WorkloadState::Waiting => matches!(target, WorkloadState::Runnable | WorkloadState::Running | WorkloadState::Cancelled | WorkloadState::Failed),
+            WorkloadState::OrphanCompleting => matches!(target, WorkloadState::Completed | WorkloadState::Failed | WorkloadState::Cancelled),
+            WorkloadState::Failed | WorkloadState::Recovering => matches!(target, WorkloadState::Queued | WorkloadState::Cancelled),
+            WorkloadState::Cancelling => matches!(target, WorkloadState::Cancelled),
+            WorkloadState::Completed | WorkloadState::Cancelled | WorkloadState::Reclaimed => false,
+        }
     }
 }
 
@@ -157,7 +189,12 @@ pub struct WorkloadControlBlock {
     pub active_lease_count: u8,
     pub _pad0: [u8; 4],
     pub tasks: [TaskDescriptor; MAX_TASKS_PER_WORKLOAD],
-    pub _padding: [u8; 24],
+    pub originating_intent_id: u32,
+    pub execution_class: u8,
+    pub retry_count: u8,
+    pub max_retries: u8,
+    pub _pad1: u8,
+    pub _padding: [u8; 16],
 }
 
 impl Default for WorkloadControlBlock {
@@ -173,7 +210,12 @@ impl Default for WorkloadControlBlock {
             active_lease_count: 0,
             _pad0: [0; 4],
             tasks: [TaskDescriptor::default(); MAX_TASKS_PER_WORKLOAD],
-            _padding: [0; 24],
+            originating_intent_id: 0,
+            execution_class: 0,
+            retry_count: 0,
+            max_retries: DEFAULT_MAX_TASK_RETRIES,
+            _pad1: 0,
+            _padding: [0; 16],
         }
     }
 }

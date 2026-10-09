@@ -9,7 +9,7 @@ KERNEL_VIRT_BASE equ 0xFFFFFFFF80000000
 
 ; Multiboot 1 Header Constants
 MB_MAGIC    equ 0x1BADB002
-MB_FLAGS    equ 0x00000003          ; Align modules on 4KB; provide memory map
+MB_FLAGS    equ 0x00000007          ; Align modules on 4KB; provide memory map; request video mode
 MB_CHECKSUM equ -(MB_MAGIC + MB_FLAGS)
 
 section .multiboot_header alloc
@@ -17,6 +17,11 @@ align 4
     dd MB_MAGIC
     dd MB_FLAGS
     dd MB_CHECKSUM
+    dd 0, 0, 0, 0, 0                ; header_addr, load_addr, load_end_addr, bss_end_addr, entry_addr
+    dd 0                            ; mode_type: 0 = linear graphics mode
+    dd 1024                         ; width: 1024
+    dd 768                          ; height: 768
+    dd 32                           ; depth: 32 bpp
 
 section .text
 global _start
@@ -37,7 +42,7 @@ _start:
     mov al, 'B'
     out dx, al
 
-    ; 3. Set up early page tables (Dual mapping 1 GiB via 2 MiB huge pages)
+    ; 3. Set up early page tables (Dual mapping 4 GiB via 2 MiB huge pages)
     call setup_page_tables
 
     ; 4. Diagnostic marker 'P' (Paging structures initialized)

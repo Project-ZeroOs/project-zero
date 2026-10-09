@@ -171,12 +171,16 @@ pub static mut GLOBAL_SNAPSHOT_BUF: VfsSessionSnapshotBlock = VfsSessionSnapshot
         _pad0: [0; 3],
         capability_envelope_handle: 0,
         active_workload_count: 0,
-        _pad1: [0; 3],
+        active_agent_count: 0,
+        membership_count: 0,
         associated_workloads: [crate::resource::DistributedId { node_id: 0, local_seq: 0 }; crate::workspace::MAX_WORKLOADS_PER_WORKSPACE],
+        associated_agents: [crate::resource::DistributedId { node_id: 0, local_seq: 0 }; crate::workspace::MAX_AGENTS_PER_WORKSPACE],
+        intent_node_count: 0,
+        intent_dep_count: 0,
         root_dir_handle: 0,
         resident_node_count: 0,
         resident_edge_count: 0,
-        _padding: [0; 460],
+        _padding: [0; 196],
     }; crate::session::MAX_WORKSPACES_PER_SESSION],
 };
 

@@ -57,6 +57,7 @@ pub mod cap_rights {
 
     // Administrative / Raw Rights (Bits 8..15)
     pub const NET_RAW:              u16 = 1 << 14; // 0x4000: Raw link-layer Ethernet II framing access
+    pub const MUTATE:               u16 = 1 << 15; // 0x8000: Directory mutation authority (create, unlink, rename)
 
     /// Checks whether child rights are a strict bitwise subset of parent rights (I-DEV-CAP-SUBSET-1).
     #[inline(always)]

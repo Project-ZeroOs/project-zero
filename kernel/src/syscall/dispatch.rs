@@ -56,6 +56,10 @@ pub extern "C" fn syscall_dispatch_rust(frame: *mut SyscallFrame) {
         SYS_NET_CLOSE => dispatch_net_close(f),
         SYS_NET_QUERY => dispatch_net_query(f),
         SYS_NET_CONFIG => dispatch_net_config(f),
+        SYS_DIR_CREATE => dispatch_dir_create(f),
+        SYS_FILE_UNLINK => dispatch_file_unlink(f),
+        SYS_FILE_RENAME => dispatch_file_rename(f),
+        SYS_DIR_READ => dispatch_dir_read(f),
         _ => SyscallError::InvalidSyscall.as_i64(),
     };
 
@@ -263,32 +267,9 @@ fn dispatch_file_open(f: &mut SyscallFrame) -> i64 {
         Err(e) => return ipc_to_syscall_err(e).as_i64(),
     };
 
-    let device_id = 0; // Default in-memory test volume
-    let dir_inode_num = if dir_handle.0 == 0 {
-        crate::fs::types::ROOT_DIR_INODE
-    } else {
-        let rflags = crate::ipc::object::KERNEL_OBJECT_TABLE_LOCK.acquire();
-        let val_res = unsafe {
-            crate::ipc::handle::validate_handle_locked(pslot, dir_handle, crate::cap::types::cap_rights::FILE_READ)
-        };
-        crate::ipc::object::KERNEL_OBJECT_TABLE_LOCK.unlock_restore(rflags);
-        match val_res {
-            Ok((obj_idx, _, _)) => {
-                let rflags2 = crate::ipc::object::KERNEL_OBJECT_TABLE_LOCK.acquire();
-                let storage_idx = unsafe { crate::ipc::object::KERNEL_OBJECT_TABLE[obj_idx].pool_index as usize };
-                crate::ipc::object::KERNEL_OBJECT_TABLE_LOCK.unlock_restore(rflags2);
-
-                crate::fs::file::STORAGE_OBJECT_TABLE_LOCK.acquire();
-                let inode_num = unsafe {
-                    crate::fs::file::FileManager::stat(storage_idx)
-                        .map(|_| crate::fs::types::ROOT_DIR_INODE)
-                        .unwrap_or(crate::fs::types::ROOT_DIR_INODE)
-                };
-                crate::fs::file::STORAGE_OBJECT_TABLE_LOCK.release();
-                inode_num
-            }
-            Err(e) => return ipc_to_syscall_err(e).as_i64(),
-        }
+    let (device_id, dir_inode_num) = match resolve_directory_inode(pslot, dir_handle, crate::cap::types::cap_rights::FILE_READ) {
+        Ok(res) => res,
+        Err(e) => return e.as_i64(),
     };
 
     crate::fs::FILESYSTEM_LOCK.acquire();
@@ -613,7 +594,7 @@ fn fs_to_syscall_err(e: crate::fs::types::FsError) -> SyscallError {
         crate::fs::types::FsError::TableFull => SyscallError::TableFull,
         crate::fs::types::FsError::NotDirectory => SyscallError::NotADirectory,
         crate::fs::types::FsError::IsDirectory => SyscallError::IsADirectory,
-        crate::fs::types::FsError::Busy => SyscallError::ResourceBusy,
+        crate::fs::types::FsError::Busy => SyscallError::ResourceConflict,
         _ => SyscallError::InvalidArgument,
     }
 }
@@ -1352,6 +1333,326 @@ fn dispatch_net_config(f: &mut SyscallFrame) -> i64 {
             }
         }
         _ => SyscallError::Success.as_i64(),
+    }
+}
+
+fn resolve_directory_inode(
+    pslot: usize,
+    dir_handle: Handle,
+    required_right: u16,
+) -> Result<(u8, u32), SyscallError> {
+
+    let rflags = crate::ipc::object::KERNEL_OBJECT_TABLE_LOCK.acquire();
+    let (obj_idx, _, _) = match unsafe {
+        crate::ipc::handle::validate_handle_locked(pslot, dir_handle, required_right)
+    } {
+        Ok(v) => v,
+        Err(e) => {
+            crate::ipc::object::KERNEL_OBJECT_TABLE_LOCK.unlock_restore(rflags);
+            return Err(ipc_to_syscall_err(e));
+        }
+    };
+
+    let pool_idx = unsafe { crate::ipc::object::KERNEL_OBJECT_TABLE[obj_idx].pool_index as usize };
+    crate::ipc::object::KERNEL_OBJECT_TABLE_LOCK.unlock_restore(rflags);
+
+    crate::fs::file::STORAGE_OBJECT_TABLE_LOCK.acquire();
+    let (device_id, inode_num, occupied) = unsafe {
+        let slot = &crate::fs::file::STORAGE_OBJECT_TABLE[pool_idx];
+        (slot.device_id as u8, slot.inode_num, slot.occupied)
+    };
+    crate::fs::file::STORAGE_OBJECT_TABLE_LOCK.release();
+
+    if !occupied {
+        return Err(SyscallError::BadHandle);
+    }
+
+    crate::fs::FILESYSTEM_LOCK.acquire();
+    let inode_res = crate::fs::InodeManager::read_inode(device_id, inode_num);
+    crate::fs::FILESYSTEM_LOCK.release();
+
+    let inode = match inode_res {
+        Ok(i) => i,
+        Err(e) => return Err(fs_to_syscall_err(e)),
+    };
+
+    if inode.file_type != (crate::fs::types::InodeType::Directory as u16) {
+        return Err(SyscallError::NotADirectory);
+    }
+
+    Ok((device_id, inode_num))
+}
+
+fn dispatch_dir_create(f: &mut SyscallFrame) -> i64 {
+    let parent_h = Handle(f.rdi as u32);
+    let name_ptr = f.rsi;
+    let name_len = f.rdx as usize;
+    let out_handle_ptr = f.r10;
+
+    let vmm = ActivePageTable::new();
+    if let Err(e) = validate_user_range(out_handle_ptr, 4, MemoryAccess::Write, &vmm) {
+        return e.as_i64();
+    }
+    if name_len == 0 || name_len > crate::fs::types::MAX_FILENAME_LEN {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+    if let Err(e) = validate_user_range(name_ptr, name_len, MemoryAccess::Read, &vmm) {
+        return e.as_i64();
+    }
+
+    let mut name_buf = [0u8; crate::fs::types::MAX_FILENAME_LEN];
+    unsafe {
+        let src = core::slice::from_raw_parts(name_ptr as *const u8, name_len);
+        name_buf[0..name_len].copy_from_slice(src);
+    }
+    let name = &name_buf[0..name_len];
+
+    let current_thread = crate::task::percpu::current_thread_from_gs();
+    let current_pid = if current_thread.is_null() { 1 } else { unsafe { (*current_thread).process_id } };
+    let pslot = match crate::ipc::handle::resolve_current_process_slot(current_pid) {
+        Ok(s) => s,
+        Err(e) => return ipc_to_syscall_err(e).as_i64(),
+    };
+
+    let (device_id, parent_inode_num) = match resolve_directory_inode(pslot, parent_h, crate::cap::types::cap_rights::MUTATE) {
+        Ok(res) => res,
+        Err(e) => return e.as_i64(),
+    };
+
+    crate::fs::FILESYSTEM_LOCK.acquire();
+    let create_res = crate::fs::DirectoryManager::create_dir(device_id, parent_inode_num, name, current_pid);
+    crate::fs::FILESYSTEM_LOCK.release();
+
+    let (new_inode_num, _, _) = match create_res {
+        Ok(res) => res,
+        Err(e) => return fs_to_syscall_err(e).as_i64(),
+    };
+
+    let storage_idx = match crate::fs::FileManager::alloc_storage_object(
+        device_id,
+        new_inode_num,
+        1,
+        crate::fs::types::O_READ | crate::fs::types::O_WRITE,
+        crate::fs::types::BLOCK_SIZE as u64,
+    ) {
+        Ok(s) => s,
+        Err(e) => return fs_to_syscall_err(e).as_i64(),
+    };
+
+    let rflags = crate::ipc::object::KERNEL_OBJECT_TABLE_LOCK.acquire();
+    let obj_idx = match unsafe {
+        crate::ipc::object::allocate_object_slot_locked(
+            crate::ipc::object::KernelObjectType::StorageObject,
+            storage_idx as u16,
+            current_pid,
+        )
+    } {
+        Ok(idx) => idx,
+        Err(e) => {
+            crate::ipc::object::KERNEL_OBJECT_TABLE_LOCK.unlock_restore(rflags);
+            let _ = crate::fs::FileManager::free_storage_object(storage_idx);
+            return ipc_to_syscall_err(e).as_i64();
+        }
+    };
+
+    let rights = crate::cap::types::cap_rights::INSPECT
+        | crate::cap::types::cap_rights::CLOSE
+        | crate::cap::types::cap_rights::DUPLICATE
+        | crate::cap::types::cap_rights::FILE_READ
+        | crate::cap::types::cap_rights::FILE_WRITE
+        | crate::cap::types::cap_rights::MUTATE;
+
+    let handle_res = unsafe {
+        crate::ipc::handle::allocate_handle_entry_locked(pslot, obj_idx, rights, 0)
+    };
+    crate::ipc::object::KERNEL_OBJECT_TABLE_LOCK.unlock_restore(rflags);
+
+    match handle_res {
+        Ok(h) => {
+            unsafe { *(out_handle_ptr as *mut u32) = h.0; }
+            SyscallError::Success.as_i64()
+        }
+        Err(e) => {
+            let rflags_cleanup = crate::ipc::object::KERNEL_OBJECT_TABLE_LOCK.acquire();
+            unsafe { crate::ipc::object::free_object_slot_locked(obj_idx); }
+            crate::ipc::object::KERNEL_OBJECT_TABLE_LOCK.unlock_restore(rflags_cleanup);
+            let _ = crate::fs::FileManager::free_storage_object(storage_idx);
+            ipc_to_syscall_err(e).as_i64()
+        }
+    }
+}
+
+fn dispatch_file_unlink(f: &mut SyscallFrame) -> i64 {
+    let parent_h = Handle(f.rdi as u32);
+    let name_ptr = f.rsi;
+    let name_len = f.rdx as usize;
+
+    let vmm = ActivePageTable::new();
+    if name_len == 0 || name_len > crate::fs::types::MAX_FILENAME_LEN {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+    if let Err(e) = validate_user_range(name_ptr, name_len, MemoryAccess::Read, &vmm) {
+        return e.as_i64();
+    }
+
+    let mut name_buf = [0u8; crate::fs::types::MAX_FILENAME_LEN];
+    unsafe {
+        let src = core::slice::from_raw_parts(name_ptr as *const u8, name_len);
+        name_buf[0..name_len].copy_from_slice(src);
+    }
+    let name = &name_buf[0..name_len];
+
+    let current_thread = crate::task::percpu::current_thread_from_gs();
+    let current_pid = if current_thread.is_null() { 1 } else { unsafe { (*current_thread).process_id } };
+    let pslot = match crate::ipc::handle::resolve_current_process_slot(current_pid) {
+        Ok(s) => s,
+        Err(e) => return ipc_to_syscall_err(e).as_i64(),
+    };
+
+    let (device_id, parent_inode_num) = match resolve_directory_inode(pslot, parent_h, crate::cap::types::cap_rights::MUTATE) {
+        Ok(res) => res,
+        Err(e) => return e.as_i64(),
+    };
+
+    crate::fs::FILESYSTEM_LOCK.acquire();
+    let unlink_res = crate::fs::DirectoryManager::unlink(device_id, parent_inode_num, name);
+    crate::fs::FILESYSTEM_LOCK.release();
+
+    match unlink_res {
+        Ok(_) => SyscallError::Success.as_i64(),
+        Err(e) => fs_to_syscall_err(e).as_i64(),
+    }
+}
+
+fn dispatch_file_rename(f: &mut SyscallFrame) -> i64 {
+    let src_dir_h = Handle(f.rdi as u32);
+    let src_name_ptr = f.rsi;
+    let src_name_len = f.rdx as usize;
+    let dst_dir_h = Handle(f.r10 as u32);
+    let dst_name_ptr = f.r8;
+    let dst_name_len = f.r9 as usize;
+    let flags = 0u32;
+
+    let vmm = ActivePageTable::new();
+    if src_name_len == 0 || src_name_len > crate::fs::types::MAX_FILENAME_LEN || dst_name_len == 0 || dst_name_len > crate::fs::types::MAX_FILENAME_LEN {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+    if let Err(e) = validate_user_range(src_name_ptr, src_name_len, MemoryAccess::Read, &vmm) {
+        return e.as_i64();
+    }
+    if let Err(e) = validate_user_range(dst_name_ptr, dst_name_len, MemoryAccess::Read, &vmm) {
+        return e.as_i64();
+    }
+
+    let mut src_name_buf = [0u8; crate::fs::types::MAX_FILENAME_LEN];
+    let mut dst_name_buf = [0u8; crate::fs::types::MAX_FILENAME_LEN];
+    unsafe {
+        let s_src = core::slice::from_raw_parts(src_name_ptr as *const u8, src_name_len);
+        src_name_buf[0..src_name_len].copy_from_slice(s_src);
+        let d_src = core::slice::from_raw_parts(dst_name_ptr as *const u8, dst_name_len);
+        dst_name_buf[0..dst_name_len].copy_from_slice(d_src);
+    }
+    let src_name = &src_name_buf[0..src_name_len];
+    let dst_name = &dst_name_buf[0..dst_name_len];
+
+    let current_thread = crate::task::percpu::current_thread_from_gs();
+    let current_pid = if current_thread.is_null() { 1 } else { unsafe { (*current_thread).process_id } };
+    let pslot = match crate::ipc::handle::resolve_current_process_slot(current_pid) {
+        Ok(s) => s,
+        Err(e) => return ipc_to_syscall_err(e).as_i64(),
+    };
+
+    let (src_dev, src_parent_inode) = match resolve_directory_inode(pslot, src_dir_h, crate::cap::types::cap_rights::MUTATE) {
+        Ok(res) => res,
+        Err(e) => return e.as_i64(),
+    };
+    let (dst_dev, dst_parent_inode) = match resolve_directory_inode(pslot, dst_dir_h, crate::cap::types::cap_rights::MUTATE) {
+        Ok(res) => res,
+        Err(e) => return e.as_i64(),
+    };
+
+    if src_dev != dst_dev {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+
+    crate::fs::FILESYSTEM_LOCK.acquire();
+    let rename_res = crate::fs::DirectoryManager::rename(
+        src_dev,
+        src_parent_inode,
+        src_name,
+        dst_parent_inode,
+        dst_name,
+        flags,
+        current_pid,
+    );
+    crate::fs::FILESYSTEM_LOCK.release();
+
+    match rename_res {
+        Ok(()) => SyscallError::Success.as_i64(),
+        Err(e) => fs_to_syscall_err(e).as_i64(),
+    }
+}
+
+fn dispatch_dir_read(f: &mut SyscallFrame) -> i64 {
+    let dir_h = Handle(f.rdi as u32);
+    let entry_offset = f.rsi as u32;
+    let buf_ptr = f.rdx;
+    let max_entries = f.r10 as usize;
+    let out_count_ptr = f.r8;
+    let inout_captured_gen_ptr = f.r9;
+
+    let vmm = ActivePageTable::new();
+    if max_entries == 0 {
+        return SyscallError::Success.as_i64();
+    }
+    let req_bytes = max_entries * core::mem::size_of::<crate::fs::types::UserDirEntry>();
+    if let Err(e) = validate_user_range(buf_ptr, req_bytes, MemoryAccess::Write, &vmm) {
+        return e.as_i64();
+    }
+    if let Err(e) = validate_user_range(out_count_ptr, 8, MemoryAccess::Write, &vmm) {
+        return e.as_i64();
+    }
+    if let Err(e) = validate_user_range(inout_captured_gen_ptr, 4, MemoryAccess::Write, &vmm) {
+        return e.as_i64();
+    }
+
+    let captured_gen = unsafe { *(inout_captured_gen_ptr as *const u32) };
+
+    let current_thread = crate::task::percpu::current_thread_from_gs();
+    let current_pid = if current_thread.is_null() { 1 } else { unsafe { (*current_thread).process_id } };
+    let pslot = match crate::ipc::handle::resolve_current_process_slot(current_pid) {
+        Ok(s) => s,
+        Err(e) => return ipc_to_syscall_err(e).as_i64(),
+    };
+
+    let (device_id, dir_inode) = match resolve_directory_inode(pslot, dir_h, crate::cap::types::cap_rights::FILE_READ) {
+        Ok(res) => res,
+        Err(e) => return e.as_i64(),
+    };
+
+    let user_buf = unsafe {
+        core::slice::from_raw_parts_mut(buf_ptr as *mut crate::fs::types::UserDirEntry, max_entries)
+    };
+
+    crate::fs::FILESYSTEM_LOCK.acquire();
+    let read_res = crate::fs::DirectoryManager::read_entries(
+        device_id,
+        dir_inode,
+        entry_offset,
+        captured_gen,
+        user_buf,
+    );
+    crate::fs::FILESYSTEM_LOCK.release();
+
+    match read_res {
+        Ok((count, active_gen)) => {
+            unsafe {
+                *(out_count_ptr as *mut u64) = count as u64;
+                *(inout_captured_gen_ptr as *mut u32) = active_gen;
+            }
+            SyscallError::Success.as_i64()
+        }
+        Err(e) => fs_to_syscall_err(e).as_i64(),
     }
 }
 

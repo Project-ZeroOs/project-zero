@@ -26,6 +26,7 @@ pub const NULL_INODE: u32 = 0;
 
 pub const SUPERBLOCK_MAGIC: [u8; 8] = *b"ZERO_FS\0";
 pub const JOURNAL_MAGIC: u64 = 0x5A45_524F_5F4A_524E; // "ZERO_JRN" in little-endian
+pub const JOURNAL_MAGIC_V2: u64 = 0x5A45_524F_5F4A_5232; // "ZERO_JR2" in little-endian
 
 pub const MAX_DATA_BLOCKS_PER_TX: usize = 8;        // 32 KiB user payload
 pub const MAX_METADATA_BLOCKS_PER_TX: usize = 1;    // 1 single-indirect CoW block
@@ -64,6 +65,7 @@ pub enum JournalOpType {
     Write = 2,
     Truncate = 3,
     Delete = 4,
+    Rename = 5,
 }
 
 #[repr(u32)]
@@ -192,6 +194,13 @@ const _: () = assert!(size_of::<DiskInode>() == 256);
 const _: () = assert!(align_of::<DiskInode>() == 8);
 
 impl DiskInode {
+    pub fn bump_generation(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            self.generation = 1;
+        }
+    }
+
     pub const fn empty() -> Self {
         Self {
             file_type: 0,
@@ -342,3 +351,104 @@ pub struct UserFileStat {
 
 const _: () = assert!(size_of::<UserFileStat>() == 32);
 const _: () = assert!(align_of::<UserFileStat>() == 8);
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct DiskJournalBlockV2 {
+    pub magic: u64,                      // 0x0000..0x0008: ASCII "ZERO_JR2"
+    pub sequence: u64,                   // 0x0008..0x0010: Monotonic transaction sequence
+    pub format_version: u32,             // 0x0010..0x0014: 2
+    pub op_type: u32,                    // 0x0014..0x0018: 1=Create, 2=Write, 3=Truncate, 4=Delete, 5=Rename
+    pub state: u32,                      // 0x0018..0x001C: 0=Free, 1=Intent, 2=Committed
+    pub flags: u32,                      // 0x001C..0x0020: Transaction flags (0x01 = Dual Slot)
+    pub src_parent_dir_inode: u32,       // 0x0020..0x0024: Source parent dir inode
+    pub src_dir_entry_slot: u32,         // 0x0024..0x0028: Source dir slot index
+    pub src_target_inode_num: u32,       // 0x0028..0x002C: Source target inode index
+    pub _pad0: u32,                      // 0x002C..0x0030: Padding
+    pub dst_parent_dir_inode: u32,       // 0x0030..0x0034: Destination parent dir inode
+    pub dst_dir_entry_slot: u32,         // 0x0034..0x0038: Destination dir slot index
+    pub dst_target_inode_num: u32,       // 0x0038..0x003C: Destination target inode index
+    pub _pad1: u32,                      // 0x003C..0x0040: Padding
+    pub allocated_blocks_count: u32,     // 0x0040..0x0044: Count (0..=10)
+    pub freed_blocks_count: u32,         // 0x0044..0x0048: Count (0..=10)
+    pub allocated_blocks: [u32; 10],     // 0x0048..0x0070: LBAs
+    pub freed_blocks: [u32; 10],         // 0x0070..0x0098: LBAs
+    pub src_dir_entry_copy: DiskDirEntry,// 0x0098..0x00D8: Pre/Post snapshot of src dir slot
+    pub dst_dir_entry_copy: DiskDirEntry,// 0x00D8..0x0118: Pre/Post snapshot of dst dir slot
+    pub src_old_inode_image: DiskInode,  // 0x0118..0x0218: Pre-tx src inode
+    pub src_new_inode_image: DiskInode,  // 0x0218..0x0318: Post-tx src inode
+    pub dst_old_inode_image: DiskInode,  // 0x0318..0x0418: Pre-tx dst target inode
+    pub dst_new_inode_image: DiskInode,  // 0x0418..0x0518: Post-tx dst target inode
+    pub checksum: u32,                   // 0x0518..0x051C: CRC32 over bytes 0x0000..0x0518 (1304 B)
+    pub _reserved: [u8; 2788],           // 0x051C..0x1000: Zero-padding to 4096 bytes
+}
+
+const _: () = assert!(size_of::<DiskJournalBlockV2>() == 4096);
+const _: () = assert!(align_of::<DiskJournalBlockV2>() == 8);
+
+impl DiskJournalBlockV2 {
+    pub const fn empty() -> Self {
+        Self {
+            magic: JOURNAL_MAGIC_V2,
+            sequence: 0,
+            format_version: 2,
+            op_type: 0,
+            state: 0,
+            flags: 0,
+            src_parent_dir_inode: 0,
+            src_dir_entry_slot: 0xFFFF_FFFF,
+            src_target_inode_num: 0,
+            _pad0: 0,
+            dst_parent_dir_inode: 0,
+            dst_dir_entry_slot: 0xFFFF_FFFF,
+            dst_target_inode_num: 0,
+            _pad1: 0,
+            allocated_blocks_count: 0,
+            freed_blocks_count: 0,
+            allocated_blocks: [0; 10],
+            freed_blocks: [0; 10],
+            src_dir_entry_copy: DiskDirEntry::empty(),
+            dst_dir_entry_copy: DiskDirEntry::empty(),
+            src_old_inode_image: DiskInode::empty(),
+            src_new_inode_image: DiskInode::empty(),
+            dst_old_inode_image: DiskInode::empty(),
+            dst_new_inode_image: DiskInode::empty(),
+            checksum: 0,
+            _reserved: [0; 2788],
+        }
+    }
+
+    pub fn is_valid_checksum(&self) -> bool {
+        let raw = unsafe {
+            core::slice::from_raw_parts(
+                self as *const Self as *const u8,
+                0x0518,
+            )
+        };
+        crc32(raw) == self.checksum
+    }
+
+    pub fn recompute_checksum(&mut self) {
+        let raw = unsafe {
+            core::slice::from_raw_parts(
+                self as *const Self as *const u8,
+                0x0518,
+            )
+        };
+        self.checksum = crc32(raw);
+    }
+}
+
+/// User space directory entry buffer returned by `SYS_DIR_READ` (64 bytes, 4-byte aligned).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct UserDirEntry {
+    pub inode_number: u32,
+    pub file_type: u8,
+    pub name_len: u8,
+    pub reserved: u16,
+    pub name: [u8; 56],
+}
+
+const _: () = assert!(size_of::<UserDirEntry>() == 64);
+const _: () = assert!(align_of::<UserDirEntry>() == 4);

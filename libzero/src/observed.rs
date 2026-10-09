@@ -2,8 +2,6 @@
 //!
 //! Authoritative Contract: Stage 6E Architecture Specification Rev1 & ADR-0036.
 
-use crate::resource::DistributedId;
-
 /// IPC Opcodes for Stage 6E observed daemon
 pub const OP_OBSERVED_SUBSCRIBE_TELEMETRY: u64 = 0x0801;
 pub const OP_OBSERVED_SUBSCRIBE_TELEMETRY_RESP: u64 = 0x0802;
